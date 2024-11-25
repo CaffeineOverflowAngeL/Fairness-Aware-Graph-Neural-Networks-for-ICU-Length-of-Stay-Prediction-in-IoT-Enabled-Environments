@@ -9,3 +9,4 @@ __pycache__/
 data_entropy_3days_10percent
 run
 run_entropy
+saved_models
