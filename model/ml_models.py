@@ -8,6 +8,7 @@ import importlib
 import sys
 import numpy as np
 import evaluation
+from tqdm import tqdm
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 import xgboost as xgb
@@ -77,6 +78,8 @@ class ML_models():
 
 
     def ml_train(self):
+
+        model_performance = []
         k_hids=self.create_kfolds()
         
         labels=pd.read_csv('./data/csv/labels.csv', header=0)
@@ -101,17 +104,18 @@ class ML_models():
                     concat_cols.extend(cols_t)
             print('train_hids',len(train_hids))
             X_train,Y_train=self.getXY(train_hids,labels,concat_cols)
+            #print("Column Names: ", X_train.columns)
             #encoding categorical
             gen_encoder = LabelEncoder()
-            eth_encoder = LabelEncoder()
+            #eth_encoder = LabelEncoder()
             ins_encoder = LabelEncoder()
-            age_encoder = LabelEncoder()
+            #age_encoder = LabelEncoder()
             gen_encoder.fit(X_train['gender'])
-            eth_encoder.fit(X_train['ethnicity'])
+            #eth_encoder.fit(X_train['ethnicity'])
             ins_encoder.fit(X_train['insurance'])
             #age_encoder.fit(X_train['Age'])
             X_train['gender']=gen_encoder.transform(X_train['gender'])
-            X_train['ethnicity']=eth_encoder.transform(X_train['ethnicity'])
+            #X_train['ethnicity']=eth_encoder.transform(X_train['ethnicity'])
             X_train['insurance']=ins_encoder.transform(X_train['insurance'])
             #X_train['Age']=age_encoder.transform(X_train['Age'])
 
@@ -121,7 +125,7 @@ class ML_models():
             X_test,Y_test=self.getXY(test_hids,labels,concat_cols)
             self.test_data=X_test.copy(deep=True)
             X_test['gender']=gen_encoder.transform(X_test['gender'])
-            X_test['ethnicity']=eth_encoder.transform(X_test['ethnicity'])
+            #X_test['ethnicity']=eth_encoder.transform(X_test['ethnicity'])
             X_test['insurance']=ins_encoder.transform(X_test['insurance'])
             #X_test['Age']=age_encoder.transform(X_test['Age'])
             
@@ -130,7 +134,12 @@ class ML_models():
             print(Y_test.shape)
             #print("just before training")
             #print(X_test.head())
-            self.train_model(X_train,Y_train,X_test,Y_test)
+            test_scores = self.train_model(X_train,Y_train,X_test,Y_test) # TODO: Check 
+            model_performance.append(test_scores)
+            print("Test Score: ", test_scores)
+
+        overall_performance = np.average(model_performance)
+        print("Overall Performance: ", overall_performance)
     
     def train_model(self,X_train,Y_train,X_test,Y_test):
         #logits=[]
@@ -172,17 +181,67 @@ class ML_models():
             #print(self.test_data.head())
             prob=model.predict_proba(X_test)
             logits=np.log2(prob[:,1]/prob[:,0])
-            self.loss(prob[:,1],np.asarray(Y_test),logits,False,True)
+            test_scores = self.loss(prob[:,1],np.asarray(Y_test),logits,False,True)
             self.save_outputImp(Y_test,prob[:,1],logits,model.feature_importances_,X_train.columns)
 
+        return test_scores
+     
+    def getXY(self, ids, labels, concat_cols):
+        X_list = []  # Use list instead of DataFrame to accumulate data, more efficient
+        y_list = []  # List to accumulate target labels
+        features = []
+        
+        # Batch processing loop
+        for sample in tqdm(ids, desc="Processing samples"): # [:len(ids) // 10] remove for full dataset or add for experimenting
+            # Extract label
+            if self.data_icu:
+                y = labels.loc[labels['stay_id'] == sample, 'label'].values[0]
+            else:
+                y = labels.loc[labels['hadm_id'] == sample, 'label'].values[0]
+            y_list.append(y)
 
-    
+            # Read dynamic data
+            dyn = pd.read_csv(f'./data/csv/{sample}/dynamic.csv', header=[0, 1])
+            
+            if self.concat:
+                dyn.columns = dyn.columns.droplevel(0)
+                dyn = dyn.to_numpy().reshape(1, -1)  # Convert to 1D array
+                dyn_df = pd.DataFrame(dyn, columns=concat_cols)
+                features = concat_cols
+            else:
+                # Aggregate dynamically based on key
+                dyn_df_list = []  # Collect aggregated data for each key
+                for key in dyn.columns.levels[0]:
+                    dyn_temp = dyn[key]
+                    agg_func = "mean" if (self.data_icu and key in ["CHART", "MEDS"]) or (not self.data_icu and key in ["LAB", "MEDS"]) else "max"
+                    agg = dyn_temp.aggregate(agg_func).reset_index(drop=True)
+                    dyn_df_list.append(agg)
+
+                dyn_df = pd.concat(dyn_df_list, axis=1).T.reset_index(drop=True)  # Concatenate all in one go
+                
+            # Read static and demographic data
+            stat = pd.read_csv(f'./data/csv/{sample}/static.csv', header=[0, 1])['COND']
+            demo = pd.read_csv(f'./data/csv/{sample}/demo.csv', header=0)
+
+            # Merge all data for the sample
+            sample_data = pd.concat([dyn_df, stat, demo], axis=1)
+            X_list.append(sample_data)
+
+        # Concatenate all accumulated data in one go
+        X_df = pd.concat(X_list, ignore_index=True)
+        y_df = pd.Series(y_list)  # Convert label list to Series for better performance
+
+        print("X_df", X_df.shape)
+        print("y_df", y_df.shape)
+        return X_df, y_df
+
+    """
     def getXY(self,ids,labels,concat_cols):
         X_df=pd.DataFrame()   
         y_df=pd.DataFrame()   
         features=[]
         #print(ids)
-        for sample in ids:
+        for sample in tqdm(ids[:len(ids) // 100], desc="Processing samples"):
             if self.data_icu:
                 y=labels[labels['stay_id']==sample]['label']
             else:
@@ -254,7 +313,8 @@ class ML_models():
         print("X_df",X_df.shape)
         print("y_df",y_df.shape)
         return X_df ,y_df
-    
+    """      
+
     def save_output(self,labels,prob,logits):
         
         output_df=pd.DataFrame()

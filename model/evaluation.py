@@ -161,7 +161,7 @@ class Loss(nn.Module):
         print("ECE: {:.2f}".format(ECE))
         print("MCE: {:.2f}".format(MCE))
         
-        #return [classify_loss, auc,apr,base,accur,prec,recall,spec,npv_val,ECE,MCE]
+        return [classify_loss, auc,apr,base,accur,prec,recall,spec,npv_val,ECE,MCE] # TODO: Comment again
     
 
     def auroc_plot(self,label, pred):

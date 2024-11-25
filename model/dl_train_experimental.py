@@ -10,17 +10,16 @@ import numpy as np
 import torch as T
 import torch
 import math
-from sklearn import metrics
 from tqdm import tqdm
+from sklearn import metrics
 import torch.nn as nn
-import torch.optim as optim
+from torch import optim
 import importlib
 import torch.nn.functional as F
 import import_ipynb
 import model_utils
 import evaluation
 import parameters
-from torch.utils.data import DataLoader, Dataset
 from parameters import *
 #import model as model
 import mimic_model as model
@@ -58,44 +57,6 @@ from parameters import *
 importlib.reload(evaluation)
 import evaluation
 
-args.batch_size = 64*4
-
-def create_edge_index(num_features_per_timestep):
-    # Assuming each feature type (Meds, Chart, etc.) is a node at each timestep
-    # For example, num_features_per_timestep = 4 if you are connecting Meds, Chart, Out, and Proc
-    edges = []
-    for i in range(num_features_per_timestep):
-        for j in range(num_features_per_timestep):
-            if i != j:
-                edges.append([i, j])
-                
-    edge_index = torch.tensor(edges, dtype=torch.long).t()  # Transpose to shape (2, num_edges)
-    return edge_index
-
-class CustomDataset(Dataset):
-    def __init__(self, hids, labels, getXY_func):
-        self.hids = hids
-        self.labels = labels
-        self.getXY_func = getXY_func  # Reference to `getXY` function
-
-    def __len__(self):
-        return len(self.hids)
-
-    def __getitem__(self, idx):
-        hid = self.hids[idx]
-
-        # Retrieve data
-        meds, chart, out, proc, lab, stat_train, demo_train, Y_train = self.getXY_func([hid], self.labels)
-
-        # If necessary, use squeeze to remove singleton dimensions
-        meds = meds.squeeze()  # Removes all singleton dimensions
-        chart = chart.squeeze()  # Removes all singleton dimensions
-        out = out.squeeze()  # Removes all singleton dimensions
-        proc = proc.squeeze()  # Removes all singleton dimensions
-        stat_train = stat_train.squeeze()  # Removes all singleton dimensions
-        demo_train = demo_train.squeeze()  # Removes all singleton dimensions
-        #lab = lab.view(0, 0)  # Removes all singleton dimensions
-        return meds, chart, out, proc, lab, stat_train, demo_train, Y_train 
 
 class DL_models():
     def __init__(self,data_icu,diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag,model_type,k_fold,oversampling,model_name,train):
@@ -117,20 +78,20 @@ class DL_models():
         if torch.cuda.is_available():
             self.device='cuda:0'
         else:
-            print("No available GPU..")
             self.device='cpu'
-        #self.device='cpu'
+        print("Device set to: ", self.device)
         if train:
             print("===============MODEL TRAINING===============")
-            print("Gender Vocab: ", self.gender_vocab)
-            print("Lab Vocab size: ", self.med_vocab_size)
-            #self.dl_train_new()
-            self.dl_train_optimized()
+            self.dl_train()
             
         else:
             self.net=torch.load(self.save_path)
             print("[ MODEL LOADED ]")
             print(self.net)
+        
+        
+        
+        
         
     def create_kfolds(self):
         labels=pd.read_csv('./data/csv/labels.csv', header=0)
@@ -167,97 +128,8 @@ class DL_models():
                 k_hids.append(hids[rids])
         return k_hids
 
-    def dl_train_new(self):
-        # Set up the device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {device}")
-        
-        k_hids = self.create_kfolds()
-        labels = pd.read_csv('./data/csv/labels.csv', header=0)
-
-        for i in range(self.k_fold):
-            # Initialize and move model to device
-            self.create_model(self.model_type)
-            self.net = self.net.to(device)  # Ensure model is on GPU
-            print("[ MODEL CREATED ]")
-            print(self.net)
-            print(f"==================={i:2d} FOLD=====================")
-
-            # Set up training and validation sets
-            test_hids = list(k_hids[i])
-            train_ids = list(set([0, 1, 2, 3, 4]) - set([i]))
-            train_hids = [hid for j in train_ids for hid in k_hids[j]]
-            val_hids = random.sample(train_hids, int(len(train_hids) * 0.1))
-            train_hids = list(set(train_hids) - set(val_hids))
-
-            min_loss = float('inf')
-            counter = 0
-            print("Total epochs:", args.num_epochs)
-
-            for epoch in range(args.num_epochs):
-                if counter == args.patience:
-                    print(f"STOPPING TRAINING - No validation improvement for {args.patience} epochs.")
-                    break
-
-                train_prob, train_logits, train_truth = [], [], []
-                self.net.train()
-                print(f"======= EPOCH {epoch + 1} =======")
-
-                # Training loop
-                for nbatch in tqdm(range(int(len(train_hids) / (args.batch_size)) // 20)):
-                    # Get data and transfer to GPU
-                    meds, chart, out, proc, lab, stat_train, demo_train, Y_train = self.getXY(
-                        train_hids[nbatch * args.batch_size:(nbatch + 1) * args.batch_size], labels
-                    )
-                    
-                    # Ensure all inputs and targets are on GPU
-                    meds, chart, out, proc, lab = meds.to(device), chart.to(device), out.to(device), proc.to(device), lab.to(device)
-                    stat_train, demo_train, Y_train = stat_train.to(device), demo_train.to(device), Y_train.to(device)
-
-                    print("Lab shape: ", lab.shape)
-
-                    # Forward pass
-                    if self.model_type == 'GNN':
-                        edge_index = create_edge_index(num_features_per_timestep=4).to(device)  # Adjust based on your data
-                        self.edge_index = edge_index
-                        output, logits = self.train_gnn_model(meds, chart, out, proc, None, stat_train, demo_train, Y_train, self.edge_index)
-                    else: 
-                        output, logits = self.train_model(meds, chart, out, proc, None, stat_train, demo_train, Y_train)
-
-                    # Collect results and move them to CPU for metrics calculations
-                    train_prob.extend(output.data.cpu().numpy())
-                    train_truth.extend(Y_train.data.cpu().numpy())
-                    train_logits.extend(logits.data.cpu().numpy())
-
-                # Convert predictions and ground truths to tensors for loss calculation
-                train_prob_tensor = torch.tensor(train_prob).to(device)
-                train_truth_tensor = torch.tensor(train_truth).to(device)
-                train_logits_tensor = torch.tensor(train_logits).to(device)
-
-                # Calculate training loss
-                self.loss(train_prob_tensor, train_truth_tensor, train_logits_tensor, False, False)
-                
-                # Validation loss calculation
-                val_loss = self.model_val(val_hids)
-                print("Validation loss:", val_loss)
-
-                # Save the best model
-                if val_loss <= min_loss + 0.02:
-                    print("Validation results improved")
-                    min_loss = val_loss
-                    print("Updating Model")
-                    torch.save(self.net.state_dict(), self.save_path)  # Save model state
-                    counter = 0
-                else:
-                    print("No improvement in Validation results")
-                    counter += 1
-
-            # Testing on the test fold after training
-            self.model_test(test_hids)
-            self.save_output()
-
-
-    def dl_train_old(self):
+    
+    def dl_train(self):
         k_hids=self.create_kfolds()
         
         labels=pd.read_csv('./data/csv/labels.csv', header=0)
@@ -278,25 +150,8 @@ class DL_models():
             val_hids=random.sample(train_hids,int(len(train_hids)*0.1))
             #print(val_hids)
             train_hids=list(set(train_hids)-set(val_hids))
-
-            print("Training HIDs:", len(train_hids))
-            print("Validation HIDs:", len(val_hids))
-
-            # Create datasets for training and validation
-            train_dataset = CustomDataset(train_hids, labels, self.getXY)
-            val_dataset = CustomDataset(val_hids, labels, self.getXY)
-
-            # Check dataset lengths
-            print("Train Dataset Length:", len(train_dataset))
-            print("Validation Dataset Length:", len(val_dataset))
-
-            # Create DataLoaders for batching
-            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
-
             min_loss=100
             counter=0
-            print("Total epochs: ", args.num_epochs)
             for epoch in range(args.num_epochs):
                 if counter==args.patience:
                     print("STOPPING THE TRAINING BECAUSE VALIDATION ERROR DID NOT IMPROVE FOR {:.1f} EPOCHS".format(args.patience))
@@ -307,20 +162,24 @@ class DL_models():
                 self.net.train()
             
                 print("======= EPOCH {:.1f} ========".format(epoch))
-                for nbatch in tqdm(range(int(len(train_hids)/(args.batch_size)) // 20)): # 
+                for nbatch in range(int(len(train_hids)/(args.batch_size))):
                     meds,chart,out,proc,lab,stat_train,demo_train,Y_train=self.getXY(train_hids[nbatch*args.batch_size:(nbatch+1)*args.batch_size],labels)
-                    print(chart.shape)
-                    print(meds.shape)
-                    print(stat_train.shape)
-                    print(demo_train.shape)
-                    print(Y_train.shape)
-                    
-                    if self.model_type == 'GNN':
-                        edge_index = create_edge_index(num_features_per_timestep=4)  # Adjust based on your data
-                        self.edge_index = edge_index
-                        output,logits = self.train_gnn_model(meds,chart,out,proc,lab,stat_train,demo_train,Y_train, self.edge_index)
-                    else: 
-                        output,logits = self.train_model(meds,chart,out,proc,lab,stat_train,demo_train,Y_train)
+#                     print(chart.shape)
+#                     print(meds.shape)
+#                     print(stat_train.shape)
+#                     print(demo_train.shape)
+#                     print(Y_train.shape)
+                    # Move data to GPU if available
+                    meds = meds.to(self.device)
+                    chart = chart.to(self.device)
+                    out = out.to(self.device)
+                    proc = proc.to(self.device)
+                    lab = lab.to(self.device)
+                    stat_train = stat_train.to(self.device)
+                    demo_train = demo_train.to(self.device)
+                    Y_train = Y_train.to(self.device)
+
+                    output,logits = self.train_model(meds,chart,out,proc,lab,stat_train,demo_train,Y_train)
                     
                     
                     train_prob.extend(output.data.cpu().numpy())
@@ -344,104 +203,129 @@ class DL_models():
                     counter=counter+1
             self.model_test(test_hids)
             self.save_output()
+    """
 
-    def dl_train_optimized(self):
-        k_hids=self.create_kfolds()
+    def dl_train(self):
+        k_hids = self.create_kfolds()
+        labels = pd.read_csv('./data/csv/labels.csv', header=0)
         
-        labels=pd.read_csv('./data/csv/labels.csv', header=0)
         for i in range(self.k_fold):
             self.create_model(self.model_type)
-            self.net = self.net.to(self.device)
             print("[ MODEL CREATED ]")
             print(self.net)
             print("==================={0:2d} FOLD=====================".format(i))
             
-            test_hids=list(k_hids[i])
-            #test_hids=test_hids[0:200]
-            train_ids=list(set([0,1,2,3,4])-set([i]))
-            train_hids=[]
+            test_hids = list(k_hids[i])
+            train_ids = list(set([0, 1, 2, 3, 4]) - set([i]))
+            train_hids = []
             for j in train_ids:
-                train_hids.extend(k_hids[j])  
-            #print(test_hids)
-            #train_hids=train_hids[0:200]
-            val_hids=random.sample(train_hids,int(len(train_hids)*0.1))
-            #print(val_hids)
-            train_hids=list(set(train_hids)-set(val_hids))
-
-            print("Training HIDs:", len(train_hids))
-            print("Validation HIDs:", len(val_hids))
-
-            # Create datasets for training and validation
-            train_dataset = CustomDataset(train_hids, labels, self.getXY)
-            val_dataset = CustomDataset(val_hids, labels, self.getXY)
-
-            # Check dataset lengths
-            print("Train Dataset Length:", len(train_dataset))
-            print("Validation Dataset Length:", len(val_dataset))
-
-            # Create DataLoaders for batching
-            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
-
-            min_loss = float('inf')
+                train_hids.extend(k_hids[j])
+            
+            val_hids = random.sample(train_hids, int(len(train_hids) * 0.1))
+            train_hids = list(set(train_hids) - set(val_hids))
+            
+            min_loss = 100
             counter = 0
-            print("Total epochs:", args.num_epochs)
-
+            
+            # Preload training and validation data to GPU (if available)
+            print("Training Data: ")
+            train_data = self.preload_data_to_device(train_hids, labels, self.device)
+            print("Validation Data: ")
+            val_data = self.preload_data_to_device(val_hids, labels, self.device)
+            
             for epoch in range(args.num_epochs):
                 if counter == args.patience:
-                    print(f"STOPPING TRAINING - No validation improvement for {args.patience} epochs.")
+                    print("STOPPING THE TRAINING BECAUSE VALIDATION ERROR DID NOT IMPROVE FOR {:.1f} EPOCHS".format(args.patience))
                     break
-
-                train_prob, train_logits, train_truth = [], [], []
+                
+                train_prob=[]
+                train_logits=[]
+                train_truth=[]
                 self.net.train()
-                print(f"======= EPOCH {epoch + 1} =======")
-
-                # Training loop using DataLoader with tqdm for progress
-                tqdm_batch = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs}", unit="batch")
-                for batch in tqdm_batch:
-                    # Unpack the batch data
-                    meds, chart, out, proc, lab, stat_train, demo_train, Y_train = batch
-                    # Handling inconsistancies on lab data
-                    lab = lab.view(0, 0)
-                    #print("Lab: ", lab.shape)
-                    Y_train = Y_train.squeeze(1)  # If needed, also squeeze Y_train
-                    #print("Ytrain new: ", Y_train.shape)
-                    # Move data to GPU
-                    meds, chart, out, proc, lab = meds.to(self.device), chart.to(self.device), out.to(self.device), proc.to(self.device), lab.to(self.device)
-                    stat_train, demo_train, Y_train = stat_train.to(self.device), demo_train.to(self.device), Y_train.to(self.device)
-
-
-                    # Forward pass
-                    if self.model_type == 'GNN':
-                        edge_index = create_edge_index(num_features_per_timestep=4).to(self.device)
-                        self.edge_index = edge_index
-                        output, logits = self.train_gnn_model(meds, chart, out, proc, lab, stat_train, demo_train, Y_train, self.edge_index)
-                    else:
-                        output, logits = self.train_model(meds, chart, out, proc, lab, stat_train, demo_train, Y_train)
-
-                    # Collect results
-                    train_prob.extend(output.detach().cpu().numpy())
-                    train_truth.extend(Y_train.detach().cpu().numpy())
-                    train_logits.extend(logits.detach().cpu().numpy())
-
-                # Validation logic (if applicable)
-                val_loss = self.model_val(val_loader)
-                print("Validation loss:", val_loss)
-
-                # Save the best model
+                print("======= EPOCH {:.1f} ========".format(epoch))
+                
+                # Shuffle training data at the beginning of each epoch
+                random.shuffle(train_data)
+                
+                for nbatch in tqdm(range(0, len(train_data), args.batch_size), desc=f"Training Epoch {epoch + 1}/{args.num_epochs}"):
+                    batch_data = train_data[nbatch:nbatch + args.batch_size]
+                    
+                    meds, chart, out, proc, lab, stat_train, demo_train, Y_train = self.get_batch_data(batch_data)
+                    
+                    # Train model on the current batch
+                    output, logits = self.train_model(meds, chart, out, proc, lab, stat_train, demo_train, Y_train)
+                    
+                    # Collect predictions for loss calculation
+                    train_prob.extend(output.data.cpu().numpy())
+                    train_truth.extend(Y_train.data.cpu().numpy())
+                    train_logits.extend(logits.data.cpu().numpy())
+                
+                # Calculate and print training loss
+                self.loss(torch.tensor(train_prob), torch.tensor(train_truth), torch.tensor(train_logits), False, False)
+                
+                # Validate the model on validation data
+                val_loss = self.model_val(val_data)
+                
                 if val_loss <= min_loss + 0.02:
                     print("Validation results improved")
                     min_loss = val_loss
                     print("Updating Model")
-                    torch.save(self.net.state_dict(), self.save_path)
+                    torch.save(self.net, self.save_path)
                     counter = 0
                 else:
                     print("No improvement in Validation results")
                     counter += 1
-
-            # Testing after training
+            
             self.model_test(test_hids)
             self.save_output()
+    """
+    def preload_data_to_device(self, hids, labels, device, batch_size=16):
+        """Preloads the dataset into GPU memory in batches."""
+        data = []
+        
+        # Process hids in batches
+        for i in tqdm(range(0, len(hids), batch_size), desc="Preloading data to GPU"):
+            batch_hids = hids[i:i + batch_size]
+            
+            # Collect data for the batch
+            batch_meds, batch_chart, batch_out, batch_proc, batch_lab, batch_stat_train, batch_demo_train, batch_Y_train = [], [], [], [], [], [], [], []
+            for hid in batch_hids:
+                meds, chart, out, proc, lab, stat_train, demo_train, Y_train = self.getXY([hid], labels)
+                batch_meds.append(meds)
+                batch_chart.append(chart)
+                batch_out.append(out)
+                batch_proc.append(proc)
+                batch_lab.append(lab)
+                batch_stat_train.append(stat_train)
+                batch_demo_train.append(demo_train)
+                batch_Y_train.append(Y_train)
+            
+            # Stack the data for the batch and move it to GPU in one operation per tensor type
+            meds = torch.stack(batch_meds).to(device)
+            chart = torch.stack(batch_chart).to(device)
+            out = torch.stack(batch_out).to(device)
+            proc = torch.stack(batch_proc).to(device)
+            lab = torch.stack(batch_lab).to(device)
+            stat_train = torch.stack(batch_stat_train).to(device)
+            demo_train = torch.stack(batch_demo_train).to(device)
+            Y_train = torch.stack(batch_Y_train).to(device)
+            
+            # Append the batch data to the final list
+            data.append((meds, chart, out, proc, lab, stat_train, demo_train, Y_train))
+        
+        return data
+
+
+    def get_batch_data(self, batch_data):
+        """Helper to unpack batch data into individual tensors."""
+        meds, chart, out, proc, lab, stat_train, demo_train, Y_train = zip(*batch_data)
+        
+        # Stack or concatenate data if necessary (depending on how the model expects input)
+        return (
+            torch.cat(meds), torch.cat(chart), torch.cat(out), torch.cat(proc),
+            torch.cat(lab), torch.cat(stat_train), torch.cat(demo_train), torch.cat(Y_train)
+        )
+
             
     def model_val(self,val_hids):
         print("======= VALIDATION ========")
@@ -452,7 +336,7 @@ class DL_models():
         val_logits=[]
         self.net.eval()
         #print(len(val_hids))
-        for nbatch in tqdm(range(int(len(val_hids)/(args.batch_size)) // 10)):
+        for nbatch in range(int(len(val_hids)/(args.batch_size))):
             meds,chart,out,proc,lab,stat_train,demo_train,y=self.getXY(val_hids[nbatch*args.batch_size:(nbatch+1)*args.batch_size],labels)
             
 #             print(chart.shape)
@@ -460,10 +344,8 @@ class DL_models():
 #             print(stat_train.shape)
 #             print(demo_train.shape)
 #             print(y.shape)
-            if self.model_type == 'GNN':
-                output,logits = self.net(meds,chart,out,proc,lab,stat_train,demo_train, self.edge_index)
-            else:         
-                output,logits = self.net(meds,chart,out,proc,lab,stat_train,demo_train)
+                    
+            output,logits = self.net(meds,chart,out,proc,lab,stat_train,demo_train)
             output=output.squeeze()
             logits=logits.squeeze()
             
@@ -495,14 +377,11 @@ class DL_models():
         self.logits=[]
         self.net.eval()
         #print(len(test_hids))
-        for nbatch in tqdm(range(int(len(test_hids)/(args.batch_size)) // 10 )):
+        for nbatch in range(int(len(test_hids)/(args.batch_size))):
             #print(test_hids[nbatch*args.batch_size:(nbatch+1)*args.batch_size])
             meds,chart,out,proc,lab,stat,demo,y=self.getXY(test_hids[nbatch*args.batch_size:(nbatch+1)*args.batch_size],labels)
             
-            if self.model_type == 'GNN':
-                output,logits = self.net(meds,chart,out,proc,lab,stat,demo, self.edge_index)
-            else:
-                output,logits = self.net(meds,chart,out,proc,lab,stat,demo)
+            output,logits = self.net(meds,chart,out,proc,lab,stat,demo)
 #             self.model_interpret([meds,chart,out,proc,lab,stat,demo])
             output=output.squeeze()
             logits=logits.squeeze()
@@ -538,7 +417,81 @@ class DL_models():
         #print(attr.shape)
         torch.backends.cudnn.enabled=True
         
-        
+    """
+    def getXY(self, ids, labels):
+        dyn_df = []
+        meds, chart, proc, out, lab = None, None, None, None, None
+        stat_list, demo_list, y_list = [], [], []
+
+        # Load dynamic data only once to extract keys
+        dyn_sample = pd.read_csv(f'./data/csv/{ids[0]}/dynamic.csv', header=[0, 1])
+        keys = dyn_sample.columns.levels[0]
+
+        # Initialize dyn_df containers for each key (Meds, Chart, etc.)
+        dyn_df = [[] for _ in range(len(keys))]
+
+        for sample in ids:
+            # Load label
+            if self.data_icu:
+                y = labels[labels['stay_id'] == sample]['label']
+            else:
+                y = labels[labels['hadm_id'] == sample]['label']
+            y_list.append(int(y))
+
+            # Load dynamic data
+            dyn = pd.read_csv(f'./data/csv/{sample}/dynamic.csv', header=[0, 1])
+
+            # Process dynamic data for each key
+            for key_idx, key in enumerate(keys):
+                dyn_temp = torch.tensor(dyn[key].values, dtype=torch.long).unsqueeze(0)
+                if dyn_temp.numel() > 0:  # Ensure the data is non-empty
+                    dyn_df[key_idx].append(dyn_temp)
+                else:
+                    # If the data is missing, append a tensor of zeros
+                    dyn_df[key_idx].append(torch.zeros_like(dyn_temp))
+
+            # Load static data
+            stat = pd.read_csv(f'./data/csv/{sample}/static.csv', header=[0, 1])['COND']
+            stat_list.append(torch.tensor(stat.values, dtype=torch.long))
+
+            # Load demo data and process categorical features
+            demo = pd.read_csv(f'./data/csv/{sample}/demo.csv', header=0)
+            demo["gender"].replace(self.gender_vocab, inplace=True)
+            demo["ethnicity"].replace(self.eth_vocab, inplace=True)
+            demo["insurance"].replace(self.ins_vocab, inplace=True)
+            demo["Age"].replace(self.age_vocab, inplace=True)
+            demo = demo[["gender", "ethnicity", "insurance", "Age"]].values
+            demo_list.append(torch.tensor(demo, dtype=torch.long))
+
+        # Concatenate dynamic data by key
+        for key_idx, key in enumerate(keys):
+            if len(dyn_df[key_idx]) > 0:
+                dyn_df[key_idx] = torch.cat(dyn_df[key_idx], dim=0)
+            else:
+                # Provide a default tensor if no valid data is present for the key
+                dyn_df[key_idx] = torch.zeros((1, 0), dtype=torch.long)
+
+        # Combine dynamic data into respective tensors
+        for k, key in enumerate(keys):
+            if key == 'MEDS':
+                meds = dyn_df[k]
+            elif key == 'CHART':
+                chart = dyn_df[k]
+            elif key == 'OUT':
+                out = dyn_df[k]
+            elif key == 'PROC':
+                proc = dyn_df[k]
+            elif key == 'LAB':
+                lab = dyn_df[k]
+
+        # Stack static and demo data
+        stat_df = torch.stack(stat_list)
+        demo_df = torch.stack(demo_list)
+        y_df = torch.tensor(y_list, dtype=torch.long)
+
+        return meds, chart, out, proc, lab, stat_df, demo_df, y_df
+    """
+    
     def getXY(self,ids,labels):
         dyn_df=[]
         meds=torch.zeros(size=(0,0))
@@ -556,7 +509,7 @@ class DL_models():
         for i in range(len(keys)):
             dyn_df.append(torch.zeros(size=(1,0)))
 #         print(len(dyn_df))
-        for sample in ids:
+        for sample in ids[:len(ids) // 20]:
             if self.data_icu:
                 y=labels[labels['stay_id']==sample]['label']
             else:
@@ -642,18 +595,13 @@ class DL_models():
 #         print("demo_df",demo_df.shape)  
 #         print("meds",meds.shape)  
      #         X_df=X_df.type(torch.LongTensor)        
-        return meds,chart,out,proc,lab ,stat_df, demo_df, y_df         
+        return meds,chart,out,proc,lab ,stat_df, demo_df, y_df       
+            
+           
+        
     
     
     def train_model(self,meds,chart,out,proc,lab,stat_train,demo_train,Y_train):
-        #print("Meds: ", meds.shape)
-        #print("chart: ", chart.shape)
-        #print("out: ", out.shape)
-        #print("proc: ", proc.shape)
-        #print("lab: ", lab.shape)
-        #print("stat_train: ", stat_train.shape)
-        #print("demo_train: ", demo_train.shape)
-        #print("Y_train: ", Y_train.shape)
         
         self.optimizer.zero_grad()
         # get the output sequence from the input and the initial hidden and cell states
@@ -672,56 +620,9 @@ class DL_models():
         return output,logits
         
 
-    def train_gnn_model(self, meds, chart, out, proc, lab, stat_train, demo_train, Y_train, edge_index):
-        self.optimizer.zero_grad()
-        
-        # Print shapes of inputs for debugging
-        print("Meds:", meds.shape, "Chart:", chart.shape, "Out:", out.shape)
-        print("Proc:", proc.shape, "Lab:", lab.shape, "Stat train:", stat_train.shape)
-        print("Demo train:", demo_train.shape)
-        
-        # Forward pass
-        output, logits = self.net(meds, chart, out, proc, lab, stat_train, demo_train, edge_index)
-        print("Output shapes after forward:", output.shape, logits.shape)
-        
-        # Adjust shapes for loss calculation
-        output = output.squeeze().to(Y_train.device)
-        logits = logits.squeeze().to(Y_train.device)
-        print("Shapes after squeeze:", output.shape, logits.shape, "Y_train:", Y_train.shape)
-        
-        # Loss calculation
-        try:
-            out_loss = self.loss(output, Y_train, logits, True, False)
-            print("Loss:", out_loss.item())
-            
-            # Backward pass
-            out_loss.backward()
-            
-            # Check gradients for NaNs/Infs
-            for name, param in self.net.named_parameters():
-                if param.grad is not None:
-                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                        print(f"Gradient issue in parameter: {name}")
-                    print(f"Gradient norm for {name}: {param.grad.norm()}")     
-            
-            # Optional gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
 
-            # Adjust learning rate if necessary
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = 1e-2  # Experiment with a lower learning rate here if it’s too high
-            
-            # Synchronize CUDA and step optimizer
-            torch.cuda.synchronize()
-            self.optimizer.step()
-        
-        except RuntimeError as e:
-            print("Runtime error during backward/optimizer step:", e)
-        
-        return output, logits
     
     def create_model(self,model_type):
-        print("Experimental Device Type: ", self.device)
         if model_type=='Time-series LSTM':
             self.net = model.LSTMBase(self.device,
                                self.cond_vocab_size,
@@ -770,19 +671,6 @@ class DL_models():
                                self.modalities,
                                embed_size=args.embedding_size,rnn_size=args.rnn_size,
                                batch_size=args.batch_size) 
-        elif model_type=='GNN':
-            self.net = model.GNNBase(self.device,
-                               self.cond_vocab_size,
-                               self.proc_vocab_size,
-                               self.med_vocab_size,
-                               self.out_vocab_size,
-                               self.chart_vocab_size,
-                               self.lab_vocab_size,
-                               self.eth_vocab_size,self.gender_vocab_size,self.age_vocab_size,self.ins_vocab_size,
-                               self.modalities,
-                               embed_size=args.embedding_size,gnn_size=args.rnn_size,
-                               batch_size=args.batch_size) 
-
         self.optimizer = optim.Adam(self.net.parameters(), lr=args.lrn_rate)
         #criterion = nn.CrossEntropyLoss()
         self.net.to(self.device)
@@ -792,6 +680,10 @@ class DL_models():
         reversed_gender = {self.gender_vocab[key]: key for key in self.gender_vocab}
         reversed_age = {self.age_vocab[key]: key for key in self.age_vocab}
         reversed_ins = {self.ins_vocab[key]: key for key in self.ins_vocab}
+#         print(self.eth)
+#         print(reversed_eth)
+        
+        #print(self.gender)
         
         self.eth=list(pd.Series(self.eth).map(reversed_eth))
 #         print(self.eth)
@@ -815,3 +707,4 @@ class DL_models():
         
         with open('./data/output/'+'outputDict', 'wb') as fp:
                pickle.dump(output_df, fp)
+    
