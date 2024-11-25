@@ -3,3 +3,9 @@ scrap
 *.gzip
 *.csv.gz
 *summary*.txt
+2.0
+data
+__pycache__/
+data_entropy_3days_10percent
+run
+run_entropy
