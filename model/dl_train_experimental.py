@@ -618,9 +618,6 @@ class DL_models():
         self.optimizer.step()
         
         return output,logits
-        
-
-
     
     def create_model(self,model_type):
         if model_type=='Time-series LSTM':

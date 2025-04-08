@@ -149,17 +149,17 @@ class Loss(nn.Module):
         #################           Fairness         #######################
         
         
-        print("BCE Loss: {:.2f}".format(classify_loss))
-        print("AU-ROC: {:.2f}".format(auc))
-        print("AU-PRC: {:.2f}".format(apr))
-        print("AU-PRC Baaseline: {:.2f}".format(base))
-        print("Accuracy: {:.2f}".format(accur))
-        print("Precision: {:.2f}".format(prec))
-        print("Recall: {:.2f}".format(recall))
-        print("Specificity: {:.2f}".format(spec))
-        print("NPV: {:.2f}".format(npv_val))
-        print("ECE: {:.2f}".format(ECE))
-        print("MCE: {:.2f}".format(MCE))
+        print("BCE Loss: {:.4f}".format(classify_loss))
+        print("AU-ROC: {:.4f}".format(auc))
+        print("AU-PRC: {:.4f}".format(apr))
+        print("AU-PRC Baaseline: {:.4f}".format(base))
+        print("Accuracy: {:.4f}".format(accur))
+        print("Precision: {:.4f}".format(prec))
+        print("Recall: {:.4f}".format(recall))
+        print("Specificity: {:.4f}".format(spec))
+        print("NPV: {:.4f}".format(npv_val))
+        print("ECE: {:.4f}".format(ECE))
+        print("MCE: {:.4f}".format(MCE))
         
         return [classify_loss, auc,apr,base,accur,prec,recall,spec,npv_val,ECE,MCE] # TODO: Comment again
     

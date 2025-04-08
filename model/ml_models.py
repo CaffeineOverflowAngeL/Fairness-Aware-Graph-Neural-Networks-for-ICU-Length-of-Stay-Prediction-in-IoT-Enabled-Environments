@@ -6,314 +6,105 @@ import random
 import os
 import importlib
 import sys
-import numpy as np
-import evaluation
 from tqdm import tqdm
 from sklearn.model_selection import KFold
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
 from pathlib import Path
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import HistGradientBoostingClassifier
-
 from imblearn.over_sampling import RandomOverSampler
 from sklearn.metrics import classification_report
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Add current folder to path
+import evaluation
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + './../..')
 
-importlib.reload(evaluation)
-import evaluation
-# MAX_LEN=12
-# MAX_COND_SEQ=56
-# MAX_PROC_SEQ=40
-# MAX_MED_SEQ=15#37
-# MAX_LAB_SEQ=899
-# MAX_BMI_SEQ=118
-
-
 class ML_models():
-    def __init__(self,data_icu,k_fold,model_type,concat,oversampling):
-        self.data_icu=data_icu
-        self.k_fold=k_fold
-        self.model_type=model_type
-        self.concat=concat
-        self.oversampling=oversampling
-        self.loss=evaluation.Loss('cpu',True,True,True,True,True,True,True,True,True,True,True)
+    def __init__(self, data_icu, model_type, concat, oversampling):
+        self.data_icu = data_icu
+        self.model_type = model_type
+        self.concat = concat
+        self.oversampling = oversampling
+        self.loss = evaluation.Loss('cpu', True, True, True, True, True, True, True, True, True, True, True)
         self.ml_train()
-    def create_kfolds(self):
-        labels=pd.read_csv('./data/csv/labels.csv', header=0)
-        
-        if (self.k_fold==0):
-            k_fold=5
-            self.k_fold=1
-        else:
-            k_fold=self.k_fold
-        hids=labels.iloc[:,0]
-        y=labels.iloc[:,1]
-        print("Total Samples",len(hids))
-        print("Positive Samples",y.sum())
-        #print(len(hids))
-        if self.oversampling:
-            print("=============OVERSAMPLING===============")
-            oversample = RandomOverSampler(sampling_strategy='minority')
-            hids=np.asarray(hids).reshape(-1,1)
-            hids, y = oversample.fit_resample(hids, y)
-            #print(hids.shape)
-            hids=hids[:,0]
-            print("Total Samples",len(hids))
-            print("Positive Samples",y.sum())
-        
-        ids=range(0,len(hids))
-        batch_size=int(len(ids)/k_fold)
-        k_hids=[]
-        for i in range(0,k_fold):
-            rids = random.sample(ids, batch_size)
-            ids = list(set(ids)-set(rids))
-            if i==0:
-                k_hids.append(hids[rids])             
-            else:
-                k_hids.append(hids[rids])
-        return k_hids
 
+    def create_kfolds(self):
+        labels = pd.read_csv('./data_default_3days_12h_1h/csv/labels.csv', header=0)
+        hids = labels.iloc[:, 0]
+        y = labels.iloc[:, 1]
+
+        if self.oversampling:
+            oversample = RandomOverSampler(sampling_strategy='minority')
+            hids, y = oversample.fit_resample(np.asarray(hids).reshape(-1, 1), y)
+            hids = hids[:, 0]
+
+        ids = list(range(len(hids)))
+        batch_size = len(ids) // 5
+        random.shuffle(ids)
+        
+        test_hids = np.array(hids[ids[:batch_size]])  # First fold as test set
+        train_hids = np.array(hids[ids[batch_size:]])  # Remaining as training set
+        
+        return train_hids, test_hids
 
     def ml_train(self):
-
-        model_performance = []
-        k_hids=self.create_kfolds()
+        train_hids, test_hids = self.create_kfolds()
+        labels = pd.read_csv('./data_default_3days_12h_1h/csv/labels.csv', header=0)
         
-        labels=pd.read_csv('./data/csv/labels.csv', header=0)
-        for i in range(self.k_fold):
-            print("==================={0:2d} FOLD=====================".format(i))
-            test_hids=k_hids[i]
-            train_ids=list(set([0,1,2,3,4])-set([i]))
-            train_hids=[]
-            for j in train_ids:
-                train_hids.extend(k_hids[j])                    
-            
-            concat_cols=[]
-            if(self.concat):
-                dyn=pd.read_csv('./data/csv/'+str(train_hids[0])+'/dynamic.csv',header=[0,1])
-                dyn.columns=dyn.columns.droplevel(0)
-                cols=dyn.columns
-                time=dyn.shape[0]
+        print(f"Training on {len(train_hids)} samples, Testing on {len(test_hids)} samples")
 
-                for t in range(time):
-                    cols_t = [x + "_"+str(t) for x in cols]
+        X_train, Y_train = self.getXY(train_hids, labels)
+        X_test, Y_test = self.getXY(test_hids, labels)
 
-                    concat_cols.extend(cols_t)
-            print('train_hids',len(train_hids))
-            X_train,Y_train=self.getXY(train_hids,labels,concat_cols)
-            #print("Column Names: ", X_train.columns)
-            #encoding categorical
-            gen_encoder = LabelEncoder()
-            #eth_encoder = LabelEncoder()
-            ins_encoder = LabelEncoder()
-            #age_encoder = LabelEncoder()
-            gen_encoder.fit(X_train['gender'])
-            #eth_encoder.fit(X_train['ethnicity'])
-            ins_encoder.fit(X_train['insurance'])
-            #age_encoder.fit(X_train['Age'])
-            X_train['gender']=gen_encoder.transform(X_train['gender'])
-            #X_train['ethnicity']=eth_encoder.transform(X_train['ethnicity'])
-            X_train['insurance']=ins_encoder.transform(X_train['insurance'])
-            #X_train['Age']=age_encoder.transform(X_train['Age'])
+        # Encode categorical variables
+        encoders = {col: LabelEncoder().fit(X_train[col]) for col in ['gender', 'insurance', 'ethnicity']}
+        for col, encoder in encoders.items():
+            X_train[col] = encoder.transform(X_train[col])
+            X_test[col] = encoder.transform(X_test[col])
+        
+        # Ensure age is a float
+        X_train['Age'] = X_train['Age'].astype(float)
+        X_test['Age'] = X_test['Age'].astype(float)
+        
+        X_train.columns = X_train.columns.astype(str)
+        X_test.columns = X_test.columns.astype(str)
 
-            print(X_train.shape)
-            print(Y_train.shape)
-            print('test_hids',len(test_hids))
-            X_test,Y_test=self.getXY(test_hids,labels,concat_cols)
-            self.test_data=X_test.copy(deep=True)
-            X_test['gender']=gen_encoder.transform(X_test['gender'])
-            #X_test['ethnicity']=eth_encoder.transform(X_test['ethnicity'])
-            X_test['insurance']=ins_encoder.transform(X_test['insurance'])
-            #X_test['Age']=age_encoder.transform(X_test['Age'])
-            
-            
-            print(X_test.shape)
-            print(Y_test.shape)
-            #print("just before training")
-            #print(X_test.head())
-            test_scores = self.train_model(X_train,Y_train,X_test,Y_test) # TODO: Check 
-            model_performance.append(test_scores)
-            print("Test Score: ", test_scores)
+        test_scores = self.train_model(X_train, Y_train, X_test, Y_test)
+        print("Test Score:", test_scores)
 
-        overall_performance = np.average(model_performance)
-        print("Overall Performance: ", overall_performance)
-    
-    def train_model(self,X_train,Y_train,X_test,Y_test):
-        #logits=[]
+    def train_model(self, X_train, Y_train, X_test, Y_test):
         print("===============MODEL TRAINING===============")
-        if self.model_type=='Gradient Bossting':
-            model = HistGradientBoostingClassifier(categorical_features=[X_train.shape[1]-3,X_train.shape[1]-2,X_train.shape[1]-1]).fit(X_train, Y_train)
-            
-            prob=model.predict_proba(X_test)
-            logits=np.log2(prob[:,1]/prob[:,0])
-            self.loss(prob[:,1],np.asarray(Y_test),logits,False,True)
-            self.save_output(Y_test,prob[:,1],logits)
-        
-        elif self.model_type=='Logistic Regression':
-            X_train=pd.get_dummies(X_train,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
-            X_test=pd.get_dummies(X_test,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
-            
-            model = LogisticRegression().fit(X_train, Y_train) 
-            logits=model.predict_log_proba(X_test)
-            prob=model.predict_proba(X_test)
-            self.loss(prob[:,1],np.asarray(Y_test),logits[:,1],False,True)
-            self.save_outputImp(Y_test,prob[:,1],logits[:,1],model.coef_[0],X_train.columns)
-        
-        elif self.model_type=='Random Forest':
-            X_train=pd.get_dummies(X_train,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
-            X_test=pd.get_dummies(X_test,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
+        model = None
+        if self.model_type == 'Gradient Boosting':
+            model = HistGradientBoostingClassifier().fit(X_train, Y_train)
+        elif self.model_type == 'Logistic Regression':
+            X_train = pd.get_dummies(X_train, columns=['gender', 'insurance', 'ethnicity'])
+            X_test = pd.get_dummies(X_test, columns=['gender', 'insurance', 'ethnicity'])
+            model = LogisticRegression().fit(X_train, Y_train)
+        elif self.model_type == 'Random Forest':
+            X_train = pd.get_dummies(X_train, columns=['gender', 'insurance', 'ethnicity'])
+            X_test = pd.get_dummies(X_test, columns=['gender', 'insurance', 'ethnicity'])
             model = RandomForestClassifier().fit(X_train, Y_train)
-            logits=model.predict_log_proba(X_test)
-            prob=model.predict_proba(X_test)
-            self.loss(prob[:,1],np.asarray(Y_test),logits[:,1],False,True)
-            self.save_outputImp(Y_test,prob[:,1],logits[:,1],model.feature_importances_,X_train.columns)
-        
-        elif self.model_type=='Xgboost':
-            X_train=pd.get_dummies(X_train,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
-            X_test=pd.get_dummies(X_test,prefix=['gender','ethnicity','insurance'],columns=['gender','ethnicity','insurance'])
+        elif self.model_type == 'XGBoost':
+            X_train = pd.get_dummies(X_train, columns=['gender', 'insurance', 'ethnicity'])
+            X_test = pd.get_dummies(X_test, columns=['gender', 'insurance', 'ethnicity'])
             model = xgb.XGBClassifier(objective="binary:logistic").fit(X_train, Y_train)
-            #logits=model.predict_log_proba(X_test)
-            #print(self.test_data['ethnicity'])
-            #print(self.test_data.shape)
-            #print(self.test_data.head())
-            prob=model.predict_proba(X_test)
-            logits=np.log2(prob[:,1]/prob[:,0])
-            test_scores = self.loss(prob[:,1],np.asarray(Y_test),logits,False,True)
-            self.save_outputImp(Y_test,prob[:,1],logits,model.feature_importances_,X_train.columns)
-
-        return test_scores
-     
-    def getXY(self, ids, labels, concat_cols):
-        X_list = []  # Use list instead of DataFrame to accumulate data, more efficient
-        y_list = []  # List to accumulate target labels
-        features = []
         
-        # Batch processing loop
-        for sample in tqdm(ids, desc="Processing samples"): # [:len(ids) // 10] remove for full dataset or add for experimenting
-            # Extract label
-            if self.data_icu:
-                y = labels.loc[labels['stay_id'] == sample, 'label'].values[0]
-            else:
-                y = labels.loc[labels['hadm_id'] == sample, 'label'].values[0]
+        prob = model.predict_proba(X_test)[:, 1]
+        logits = np.log2(prob / (1 - prob))
+        test_scores = self.loss(prob, np.asarray(Y_test), logits, False, True)
+        return test_scores
+
+    def getXY(self, ids, labels):
+        X_list, y_list = [], []
+        for sample in tqdm(ids, desc="Processing samples"):
+            y = labels.loc[labels.iloc[:, 0] == sample, 'label'].values[0]
             y_list.append(y)
-
-            # Read dynamic data
-            dyn = pd.read_csv(f'./data/csv/{sample}/dynamic.csv', header=[0, 1])
-            
-            if self.concat:
-                dyn.columns = dyn.columns.droplevel(0)
-                dyn = dyn.to_numpy().reshape(1, -1)  # Convert to 1D array
-                dyn_df = pd.DataFrame(dyn, columns=concat_cols)
-                features = concat_cols
-            else:
-                # Aggregate dynamically based on key
-                dyn_df_list = []  # Collect aggregated data for each key
-                for key in dyn.columns.levels[0]:
-                    dyn_temp = dyn[key]
-                    agg_func = "mean" if (self.data_icu and key in ["CHART", "MEDS"]) or (not self.data_icu and key in ["LAB", "MEDS"]) else "max"
-                    agg = dyn_temp.aggregate(agg_func).reset_index(drop=True)
-                    dyn_df_list.append(agg)
-
-                dyn_df = pd.concat(dyn_df_list, axis=1).T.reset_index(drop=True)  # Concatenate all in one go
-                
-            # Read static and demographic data
-            stat = pd.read_csv(f'./data/csv/{sample}/static.csv', header=[0, 1])['COND']
-            demo = pd.read_csv(f'./data/csv/{sample}/demo.csv', header=0)
-
-            # Merge all data for the sample
-            sample_data = pd.concat([dyn_df, stat, demo], axis=1)
-            X_list.append(sample_data)
-
-        # Concatenate all accumulated data in one go
-        X_df = pd.concat(X_list, ignore_index=True)
-        y_df = pd.Series(y_list)  # Convert label list to Series for better performance
-
-        print("X_df", X_df.shape)
-        print("y_df", y_df.shape)
-        return X_df, y_df
-
-    """
-    def getXY(self,ids,labels,concat_cols):
-        X_df=pd.DataFrame()   
-        y_df=pd.DataFrame()   
-        features=[]
-        #print(ids)
-        for sample in tqdm(ids[:len(ids) // 100], desc="Processing samples"):
-            if self.data_icu:
-                y=labels[labels['stay_id']==sample]['label']
-            else:
-                y=labels[labels['hadm_id']==sample]['label']
-            
-            #print(sample)
-            dyn=pd.read_csv('./data/csv/'+str(sample)+'/dynamic.csv',header=[0,1])
-            
-            if self.concat:
-                dyn.columns=dyn.columns.droplevel(0)
-                dyn=dyn.to_numpy()
-                dyn=dyn.reshape(1,-1)
-                #print(dyn.shape)
-                #print(len(concat_cols))
-                dyn_df=pd.DataFrame(data=dyn,columns=concat_cols)
-                features=concat_cols
-            else:
-                dyn_df=pd.DataFrame()
-                #print(dyn)
-                for key in dyn.columns.levels[0]:
-                    #print(sample)                    
-                    dyn_temp=dyn[key]
-                    if self.data_icu:
-                        if ((key=="CHART") or (key=="MEDS")):
-                            agg=dyn_temp.aggregate("mean")
-                            agg=agg.reset_index()
-                        else:
-                            agg=dyn_temp.aggregate("max")
-                            agg=agg.reset_index()
-                    else:
-                        if ((key=="LAB") or (key=="MEDS")):
-                            agg=dyn_temp.aggregate("mean")
-                            agg=agg.reset_index()
-                        else:
-                            agg=dyn_temp.aggregate("max")
-                            agg=agg.reset_index()
-                    if dyn_df.empty:
-                        dyn_df=agg
-                    else:
-                        dyn_df=pd.concat([dyn_df,agg],axis=0)
-                #dyn_df=dyn_df.drop(index=(0))
-#                 print(dyn_df.shape)
-#                 print(dyn_df.head())
-                dyn_df=dyn_df.T
-                dyn_df.columns = dyn_df.iloc[0]
-                dyn_df=dyn_df.iloc[1:,:]
-                        
-#             print(dyn.shape)
-#             print(dyn_df.shape)
-#             print(dyn_df.head())
-            stat=pd.read_csv('./data/csv/'+str(sample)+'/static.csv',header=[0,1])
-            stat=stat['COND']
-#             print(stat.shape)
-#             print(stat.head())
-            demo=pd.read_csv('./data/csv/'+str(sample)+'/demo.csv',header=0)
-#             print(demo.shape)
-#             print(demo.head())
-            if X_df.empty:
-                X_df=pd.concat([dyn_df,stat],axis=1)
-                X_df=pd.concat([X_df,demo],axis=1)
-            else:
-                X_df=pd.concat([X_df,pd.concat([pd.concat([dyn_df,stat],axis=1),demo],axis=1)],axis=0)
-            if y_df.empty:
-                y_df=y
-            else:
-                y_df=pd.concat([y_df,y],axis=0)
-#             print("X_df",X_df.shape)
-#             print("y_df",y_df.shape)
-        print("X_df",X_df.shape)
-        print("y_df",y_df.shape)
-        return X_df ,y_df
-    """      
+            dyn = pd.read_csv(f'./data_default_3days_12h_1h/csv/{sample}/dynamic.csv', header=[0, 1])
+            demo = pd.read_csv(f'./data_default_3days_12h_1h/csv/{sample}/demo.csv', header=0)
+            X_list.append(pd.concat([dyn.mean().to_frame().T, demo], axis=1))
+        return pd.concat(X_list, ignore_index=True), pd.Series(y_list)
 
     def save_output(self,labels,prob,logits):
         
@@ -326,7 +117,7 @@ class ML_models():
         output_df['age']=list(self.test_data['Age'])
         output_df['insurance']=list(self.test_data['insurance'])
         
-        with open('./data/output/'+'outputDict', 'wb') as fp:
+        with open('./data_default_3days_12h_1h/output/'+'outputDict', 'wb') as fp:
                pickle.dump(output_df, fp)
         
     
@@ -341,13 +132,13 @@ class ML_models():
         output_df['age']=list(self.test_data['Age'])
         output_df['insurance']=list(self.test_data['insurance'])
         
-        with open('./data/output/'+'outputDict', 'wb') as fp:
+        with open('./data_default_3days_12h_1h/output/'+'outputDict', 'wb') as fp:
                pickle.dump(output_df, fp)
         
         imp_df=pd.DataFrame()
         imp_df['imp']=importance
         imp_df['feature']=features
-        imp_df.to_csv('./data/output/'+'feature_importance.csv', index=False)
+        imp_df.to_csv('./data_default_3days_12h_1h/output/'+'feature_importance.csv', index=False)
                 
                 
 
