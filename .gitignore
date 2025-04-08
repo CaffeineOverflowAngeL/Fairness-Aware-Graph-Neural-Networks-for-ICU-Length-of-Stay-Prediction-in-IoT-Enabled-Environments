@@ -22,3 +22,4 @@ benchmark_en.py
 benchmark_scripts/entropy_dl_models.sh
 benchmark_scripts/en_dl_models.sh
 benchmark_scripts/3days/default_dl_models.sh
+en_analysis.ipynb
