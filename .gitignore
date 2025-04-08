@@ -16,3 +16,6 @@ mimiciv
 images
 env_notes
 evaluation_metrics*
+benchmark_scripts/notes.txt
+env_notes.txt
+benchmark_en.py
