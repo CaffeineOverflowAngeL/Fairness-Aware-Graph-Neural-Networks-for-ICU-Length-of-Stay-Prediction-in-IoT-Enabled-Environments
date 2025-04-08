@@ -10,3 +10,9 @@ data_entropy_3days_10percent
 run
 run_entropy
 saved_models
+data*
+fairness_evals
+mimiciv
+images
+env_notes
+evaluation_metrics*
