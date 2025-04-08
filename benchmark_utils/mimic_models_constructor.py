@@ -2,11 +2,44 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.autograd import *
-from torch_geometric.nn import GCNConv, GATConv  # Graph convolutional layers
+from torch_geometric.nn import GCNConv, GATConv, GatedGraphConv  # Graph convolutional layers
 from torch_geometric.utils import add_self_loops
 
+class AttentionLayer(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(AttentionLayer, self).__init__()
+        self.query_layer = nn.Linear(input_size, output_size)
+        self.key_layer = nn.Linear(input_size, output_size)
+        self.value_layer = nn.Linear(input_size, output_size)
+        
+    def forward(self, x):
+        Q = self.query_layer(x)  # Shape: [batch_size, seq_len, output_size]
+        K = self.key_layer(x)    # Shape: [batch_size, seq_len, output_size]
+        V = self.value_layer(x)  # Shape: [batch_size, seq_len, output_size]
+
+        # Compute attention scores (scaled dot product)
+        attention_scores = torch.bmm(Q, K.transpose(1, 2))  # Shape: [batch_size, seq_len, seq_len]
+        attention_scores = attention_scores / (K.size(-1) ** 0.5)  # Scaling factor for stability
+        
+        # Apply softmax to get attention weights
+        attention_weights = F.softmax(attention_scores, dim=-1)  # Shape: [batch_size, seq_len, seq_len]
+        
+        # Apply attention weights to values
+        attention_output = torch.bmm(attention_weights, V)  # Shape: [batch_size, seq_len, output_size]
+        
+        return attention_output
+
+# GraphConv Layer (from PyTorch Geometric)
+class GraphConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(GraphConvLayer, self).__init__()
+        self.conv = GCNConv(in_channels, out_channels)
+        
+    def forward(self, x, edge_index):
+        return self.conv(x, edge_index)
+
 class LSTMBase(nn.Module):
-    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, rnnLayers, batch_size):
+    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, rnnLayers, batch_size, fairness):
         super(LSTMBase, self).__init__()
         self.embed_size=embed_size
         self.latent_size=latent_size
@@ -28,6 +61,7 @@ class LSTMBase(nn.Module):
         self.padding_idx = 0
         self.device=device
         self.modalities=modalities
+        self.fairness = fairness
         self.build()
         
     def build(self):
@@ -46,18 +80,19 @@ class LSTMBase(nn.Module):
         if self.cond_vocab_size:
             self.cond=StatEmbed(self.device,self.cond_vocab_size,self.embed_size,self.latent_size)
         
-        self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
-        self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
-        self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
-        self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
+        if not self.fairness:
+            self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
+            self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
+            self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
+            self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
        
         
         self.embedfc=nn.Linear((self.latent_size*(self.modalities+4)), self.latent_size, True)
+        self.fembedfc=nn.Linear((self.latent_size*5), self.latent_size, True)
+        
         self.rnn=nn.LSTM(input_size=self.latent_size,hidden_size=self.rnn_size,num_layers = self.rnnLayers,batch_first=True)
         self.fc1=nn.Linear(self.rnn_size, int((self.rnn_size)/2), True)
         self.fc2=nn.Linear(int((self.rnn_size)/2), 1, True)
-        
-        #self.sig = nn.Sigmoid()
         
     def forward(self,meds,chart,out,proc,lab,conds,demo):   
 #         if interpret:
@@ -144,58 +179,64 @@ class LSTMBase(nn.Module):
 #         print("cond",condEmbed.shape)
         
 #         print("out",out1.shape)
-        if demo.shape[0]>self.batch_size:
-                demo=demo[-self.batch_size:]
-        gender=demo[:,0].to(self.device)
-        gender=gender.type(torch.LongTensor)
-        gender=gender.to(self.device)
-        gender=self.genderEmbed(gender)
-        gender=gender.unsqueeze(1)
-        gender=gender.repeat(1,out1.shape[1],1)
-        gender=gender.type(torch.FloatTensor)
-        gender=gender.to(self.device)
-        out1=torch.cat((out1,gender),2)
-#         print(gender.shape)
-        
-        eth=demo[:,1].to(self.device)
-        eth=eth.type(torch.LongTensor)
-        eth=eth.to(self.device)
-        eth=self.ethEmbed(eth)
-        eth=eth.unsqueeze(1)
-        eth=eth.repeat(1,out1.shape[1],1)
-        eth=eth.type(torch.FloatTensor)
-        eth=eth.to(self.device)
-        out1=torch.cat((out1,eth),2)
-#         print(eth.shape)
-        
-        ins=demo[:,2].to(self.device)
-        ins=ins.type(torch.LongTensor)
-        ins=ins.to(self.device)
-        ins=self.insEmbed(ins)
-        ins=ins.unsqueeze(1)
-        ins=ins.repeat(1,out1.shape[1],1)
-        ins=ins.type(torch.FloatTensor)
-        ins=ins.to(self.device)
-        out1=torch.cat((out1,ins),2)
-#         print(ins.shape)
-        
-        age=demo[:,3].to(self.device)
-        age=age.type(torch.LongTensor)
-        age=age.to(self.device)
-        age=self.ageEmbed(age)
-        age=age.unsqueeze(1)
-        age=age.repeat(1,out1.shape[1],1)
-        age=age.type(torch.FloatTensor)
-        age=age.to(self.device)
-        out1=torch.cat((out1,age),2)
-#         print(age.shape)
-        
-#         print("out",out1.shape)
-        
-        out1=out1.type(torch.FloatTensor)
-        out1=out1.to(self.device)
-        out1=self.embedfc(out1)
-        #print("fcout",out1.shape)
+        if not self.fairness:
+            if demo.shape[0]>self.batch_size:
+                    demo=demo[-self.batch_size:]
+            gender=demo[:,0].to(self.device)
+            gender=gender.type(torch.LongTensor)
+            gender=gender.to(self.device)
+            gender=self.genderEmbed(gender)
+            gender=gender.unsqueeze(1)
+            gender=gender.repeat(1,out1.shape[1],1)
+            gender=gender.type(torch.FloatTensor)
+            gender=gender.to(self.device)
+            out1=torch.cat((out1,gender),2)
+    #         print(gender.shape)
+            
+            eth=demo[:,1].to(self.device)
+            eth=eth.type(torch.LongTensor)
+            eth=eth.to(self.device)
+            eth=self.ethEmbed(eth)
+            eth=eth.unsqueeze(1)
+            eth=eth.repeat(1,out1.shape[1],1)
+            eth=eth.type(torch.FloatTensor)
+            eth=eth.to(self.device)
+            out1=torch.cat((out1,eth),2)
+    #         print(eth.shape)
+            
+            ins=demo[:,2].to(self.device)
+            ins=ins.type(torch.LongTensor)
+            ins=ins.to(self.device)
+            ins=self.insEmbed(ins)
+            ins=ins.unsqueeze(1)
+            ins=ins.repeat(1,out1.shape[1],1)
+            ins=ins.type(torch.FloatTensor)
+            ins=ins.to(self.device)
+            out1=torch.cat((out1,ins),2)
+    #         print(ins.shape)
+            
+            age=demo[:,3].to(self.device)
+            age=age.type(torch.LongTensor)
+            age=age.to(self.device)
+            age=self.ageEmbed(age)
+            age=age.unsqueeze(1)
+            age=age.repeat(1,out1.shape[1],1)
+            age=age.type(torch.FloatTensor)
+            age=age.to(self.device)
+            out1=torch.cat((out1,age),2)
+    #         print(age.shape)
+            
+    #         print("out",out1.shape)
+            
+            out1=out1.type(torch.FloatTensor)
+            out1=out1.to(self.device)
+            out1=self.embedfc(out1)
+            #print("fcout",out1.shape)
+        else: 
+            out1=out1.type(torch.FloatTensor)
+            out1=out1.to(self.device)
+            out1=self.fembedfc(out1)
+            #print("fcout",out1.shape)
         
         h_0, c_0 = self.init_hidden()
         h_0, c_0 = h_0.to(self.device), c_0.to(self.device)
@@ -236,7 +277,7 @@ class LSTMBase(nn.Module):
     
     
 class LSTMBaseH(nn.Module):
-    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, rnnLayers, batch_size):
+    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, rnnLayers, batch_size, fairness):
         super(LSTMBaseH, self).__init__()
         self.embed_size=embed_size
         self.latent_size=latent_size
@@ -258,6 +299,7 @@ class LSTMBaseH(nn.Module):
         self.padding_idx = 0
         self.device=device
         self.modalities=modalities
+        self.fairness = fairness
         self.build()
         
     def build(self):
@@ -276,18 +318,23 @@ class LSTMBaseH(nn.Module):
         if self.cond_vocab_size:
             self.cond=StatEmbed(self.device,self.cond_vocab_size,self.embed_size,self.latent_size)
         
-        self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
-        self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
-        self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
-        self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
+        if not self.fairness:
+            self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
+            self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
+            self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
+            self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
        
         
         self.embedfc=nn.Linear((self.latent_size*(self.modalities-1)), self.latent_size, True)
         self.statfc=nn.Linear(int(self.latent_size*5), self.latent_size, True)
         self.statfc2=nn.Linear(self.latent_size, self.rnn_size, True)
+        
         self.rnn=nn.LSTM(input_size=self.latent_size,hidden_size=self.rnn_size,num_layers = self.rnnLayers,batch_first=True)
         self.fc1=nn.Linear(self.rnn_size*2, self.rnn_size, True)
         self.fc2=nn.Linear(self.rnn_size, 1, False)
+
+        self.ffc1=nn.Linear(self.rnn_size, self.rnn_size, True)
+        self.ffc2=nn.Linear(self.rnn_size, 1, False)
         
         #self.sig = nn.Sigmoid()
     
@@ -363,41 +410,42 @@ class LSTMBaseH(nn.Module):
         out2=condEmbed
         #print("cond",condEmbed.shape)
         
-        gender=demo[:,0].to(self.device)
-        gender=self.genderEmbed(gender)
-        gender=gender.type(torch.FloatTensor)
-        gender=gender.to(self.device)
-        out2=torch.cat((out2,gender),1)
-#         print(gender.shape)
-        
-        eth=demo[:,1].to(self.device)
-        eth=self.ethEmbed(eth)
-        eth=eth.type(torch.FloatTensor)
-        eth=eth.to(self.device)
-        out2=torch.cat((out2,eth),1)
-#         print(eth.shape)
-        
-        ins=demo[:,2].to(self.device)
-        ins=self.insEmbed(ins)
-        ins=ins.type(torch.FloatTensor)
-        ins=ins.to(self.device)
-        out2=torch.cat((out2,ins),1)
-#         print(ins.shape)
-        
-        age=demo[:,3].to(self.device)
-        age=self.ageEmbed(age)
-        age=age.type(torch.FloatTensor)
-        age=age.to(self.device)
-        out2=torch.cat((out2,age),1)
-#         print(age.shape)
-        
-#         print("out",out1.shape)
-        
-        out2=out2.type(torch.FloatTensor)
-        out2=out2.to(self.device)
-        out2=self.statfc(out2)
-        out2=self.statfc2(out2)
-#         print("fcout",out1.shape)
+        if not self.fairness:
+            gender=demo[:,0].to(self.device)
+            gender=self.genderEmbed(gender)
+            gender=gender.type(torch.FloatTensor)
+            gender=gender.to(self.device)
+            out2=torch.cat((out2,gender),1)
+    #         print(gender.shape)
+            
+            eth=demo[:,1].to(self.device)
+            eth=self.ethEmbed(eth)
+            eth=eth.type(torch.FloatTensor)
+            eth=eth.to(self.device)
+            out2=torch.cat((out2,eth),1)
+    #         print(eth.shape)
+            
+            ins=demo[:,2].to(self.device)
+            ins=self.insEmbed(ins)
+            ins=ins.type(torch.FloatTensor)
+            ins=ins.to(self.device)
+            out2=torch.cat((out2,ins),1)
+    #         print(ins.shape)
+            
+            age=demo[:,3].to(self.device)
+            age=self.ageEmbed(age)
+            age=age.type(torch.FloatTensor)
+            age=age.to(self.device)
+            out2=torch.cat((out2,age),1)
+    #         print(age.shape)
+            
+    #         print("out",out1.shape)
+            
+            out2=out2.type(torch.FloatTensor)
+            out2=out2.to(self.device)
+            out2=self.statfc(out2)
+            out2=self.statfc2(out2)
+    #         print("fcout",out1.shape)
         
         h_0, c_0 = self.init_hidden()
         h_0, c_0 = h_0.to(self.device), c_0.to(self.device)
@@ -407,10 +455,16 @@ class LSTMBaseH(nn.Module):
         code_h_n=code_h_n.squeeze()
 #         print("rnnout",code_h_n.shape)
         
-        out1=torch.cat((code_h_n,out2),1)
-        out1 = self.fc1(out1)
-        out1 = self.fc2(out1)
-        #print("out1",out1.shape)
+        if not self.fairness:
+            out1=torch.cat((code_h_n,out2),1)
+            out1 = self.fc1(out1)
+            out1 = self.fc2(out1)
+            #print("out1",out1.shape)
+        else: 
+            #print("out1",out1.shape)
+            #print("code_pool", code_pool.shape)
+            out1 = self.ffc1(code_h_n)
+            out1 = self.ffc2(out1)
         
         sig = nn.Sigmoid()
         sigout1=sig(out1)
@@ -866,7 +920,7 @@ class CodeAttn(nn.Module):
 
             
 class CNNBase(nn.Module):
-    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, batch_size):
+    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size, batch_size, fairness, kernel_size):
         super(CNNBase, self).__init__()
         self.embed_size=embed_size
         self.latent_size=latent_size
@@ -887,9 +941,9 @@ class CNNBase(nn.Module):
         self.padding_idx = 0
         self.device=device
         self.modalities=modalities
+        self.fairness = fairness
+        self.kernel_size = kernel_size
         self.build()
-
-        print("lab_vocab_size",  lab_vocab_size)
         
     def build(self):
             
@@ -907,26 +961,21 @@ class CNNBase(nn.Module):
         if self.cond_vocab_size:
             self.cond=StatEmbed(self.device,self.cond_vocab_size,self.embed_size,self.latent_size)
         
-        self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
-        self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
-        self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
-        self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
-       
+        if not self.fairness:
+            self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
+            self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
+            self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
+            self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
         
         self.embedfc=nn.Linear((self.latent_size*(self.modalities+4)), self.latent_size, True)
-        
-        self.conv1 = nn.Conv1d(self.latent_size,self.rnn_size, kernel_size = 10, stride = 1, padding =0)   
+        self.fembedfc=nn.Linear((self.latent_size*5), self.latent_size, True)
+
+        self.conv1 = nn.Conv1d(self.latent_size,self.rnn_size, kernel_size = self.kernel_size, stride = 1, padding = 0)   
         self.bn1 = nn.BatchNorm1d(self.rnn_size)
         self.maxpool1 = nn.AdaptiveMaxPool1d(1, True)
         
         self.fc1=nn.Linear(self.rnn_size, int((self.rnn_size)/2), True)
         self.fc2=nn.Linear(int((self.rnn_size)/2), 1, True)
-        
-        
-        
-        
-        
-        #self.sig = nn.Sigmoid()
         
     def forward(self,meds,chart,out,proc,lab,conds,demo):         
         #meds,chart,out,proc,lab,conds,demo=X[0],X[1],X[2],X[3],X[4],X[5],X[6]   
@@ -983,51 +1032,55 @@ class CNNBase(nn.Module):
         condEmbed=condEmbed.to(self.device)
 #         print("cond",condEmbed.shape)
         out1=torch.cat((out1,condEmbed),2)
-#         print("cond",condEmbed.shape)
         
-        gender=demo[:,0].to(self.device)
-        gender=self.genderEmbed(gender)
-        gender=gender.unsqueeze(1)
-        gender=gender.repeat(1,out1.shape[1],1)
-        gender=gender.type(torch.FloatTensor)
-        gender=gender.to(self.device)
-        out1=torch.cat((out1,gender),2)
-#         print(gender.shape)
-        
-        eth=demo[:,1].to(self.device)
-        eth=self.ethEmbed(eth)
-        eth=eth.unsqueeze(1)
-        eth=eth.repeat(1,out1.shape[1],1)
-        eth=eth.type(torch.FloatTensor)
-        eth=eth.to(self.device)
-        out1=torch.cat((out1,eth),2)
-#         print(eth.shape)
-        
-        ins=demo[:,2].to(self.device)
-        ins=self.insEmbed(ins)
-        ins=ins.unsqueeze(1)
-        ins=ins.repeat(1,out1.shape[1],1)
-        ins=ins.type(torch.FloatTensor)
-        ins=ins.to(self.device)
-        out1=torch.cat((out1,ins),2)
-#         print(ins.shape)
-        
-        age=demo[:,3].to(self.device)
-        age=self.ageEmbed(age)
-        age=age.unsqueeze(1)
-        age=age.repeat(1,out1.shape[1],1)
-        age=age.type(torch.FloatTensor)
-        age=age.to(self.device)
-        out1=torch.cat((out1,age),2)
-#         print(age.shape)
-        
-#         print("out",out1.shape)
-        
-        out1=out1.type(torch.FloatTensor)
-        out1=out1.to(self.device)
-        out1=self.embedfc(out1)
-#         print("fcout",out1.shape)
-           
+        if not self.fairness:
+            gender=demo[:,0].to(self.device)
+            gender=self.genderEmbed(gender)
+            gender=gender.unsqueeze(1)
+            gender=gender.repeat(1,out1.shape[1],1)
+            gender=gender.type(torch.FloatTensor)
+            gender=gender.to(self.device)
+            out1=torch.cat((out1,gender),2)
+    #         print(gender.shape)
+            
+            eth=demo[:,1].to(self.device)
+            eth=self.ethEmbed(eth)
+            eth=eth.unsqueeze(1)
+            eth=eth.repeat(1,out1.shape[1],1)
+            eth=eth.type(torch.FloatTensor)
+            eth=eth.to(self.device)
+            out1=torch.cat((out1,eth),2)
+    #         print(eth.shape)
+            
+            ins=demo[:,2].to(self.device)
+            ins=self.insEmbed(ins)
+            ins=ins.unsqueeze(1)
+            ins=ins.repeat(1,out1.shape[1],1)
+            ins=ins.type(torch.FloatTensor)
+            ins=ins.to(self.device)
+            out1=torch.cat((out1,ins),2)
+    #         print(ins.shape)
+            
+            age=demo[:,3].to(self.device)
+            age=self.ageEmbed(age)
+            age=age.unsqueeze(1)
+            age=age.repeat(1,out1.shape[1],1)
+            age=age.type(torch.FloatTensor)
+            age=age.to(self.device)
+            out1=torch.cat((out1,age),2)
+    #         print(age.shape)
+            
+    #         print("out",out1.shape)
+            
+            out1=out1.type(torch.FloatTensor)
+            out1=out1.to(self.device)
+            out1=self.embedfc(out1)
+    #         print("fcout",out1.shape)
+        else:
+            out1=out1.type(torch.FloatTensor)
+            out1=out1.to(self.device)
+            out1=self.fembedfc(out1)
+
         #Run through CNN
         out1=out1.permute(0,2,1)
         code_output = self.conv1(out1)
@@ -1037,8 +1090,6 @@ class CNNBase(nn.Module):
         
         code_pool, code_indices = self.maxpool1(code_output)
 #         print("output",code_pool.shape)
-        
-        
         code_pool = torch.squeeze(code_pool)
         code_pool=code_pool.view(code_pool.shape[0],-1)
 #         print("output",code_pool.shape)
@@ -1061,7 +1112,7 @@ class CNNBase(nn.Module):
     
     
 class CNNBaseH(nn.Module):
-    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size,batch_size):
+    def __init__(self,device,cond_vocab_size,proc_vocab_size,med_vocab_size,out_vocab_size,chart_vocab_size,lab_vocab_size,eth_vocab_size,gender_vocab_size,age_vocab_size,ins_vocab_size,modalities,embed_size,rnn_size,latent_size,batch_size, fairness, kernel_size):
         super(CNNBaseH, self).__init__()
         self.embed_size=embed_size
         self.latent_size=latent_size
@@ -1082,6 +1133,8 @@ class CNNBaseH(nn.Module):
         self.padding_idx = 0
         self.device=device
         self.modalities=modalities
+        self.fairness = fairness
+        self.kernel_size = kernel_size
         self.build()
         
     def build(self):
@@ -1100,22 +1153,26 @@ class CNNBaseH(nn.Module):
         if self.cond_vocab_size:
             self.cond=StatEmbed(self.device,self.cond_vocab_size,self.embed_size,self.latent_size)
         
-        self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
-        self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
-        self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
-        self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
+        if not self.fairness:
+            self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
+            self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
+            self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
+            self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
        
         
         self.embedfc=nn.Linear((self.latent_size*(self.modalities-1)), self.latent_size, True)
         self.statfc=nn.Linear(int(self.latent_size*5), self.latent_size, True)
         self.statfc2=nn.Linear(self.latent_size, self.rnn_size, True)
         
-        self.conv1 = nn.Conv1d(self.latent_size,self.rnn_size, kernel_size = 10, stride = 1, padding =0)   
+        self.conv1 = nn.Conv1d(self.latent_size,self.rnn_size, kernel_size = self.kernel_size, stride = 1, padding = 0)   
         self.bn1 = nn.BatchNorm1d(self.rnn_size)
         self.maxpool1 = nn.AdaptiveMaxPool1d(1, True)
         
         self.fc1=nn.Linear(self.rnn_size*2, self.rnn_size, True)
         self.fc2=nn.Linear(self.rnn_size, 1, False)
+
+        self.ffc1=nn.Linear(self.rnn_size, self.rnn_size, True)
+        self.ffc2=nn.Linear(self.rnn_size, 1, False)
         
         #self.sig = nn.Sigmoid()
         
@@ -1180,41 +1237,42 @@ class CNNBaseH(nn.Module):
         out2=condEmbed
         #print("cond",condEmbed.shape)
         
-        gender=demo[:,0].to(self.device)
-        gender=self.genderEmbed(gender)
-        gender=gender.type(torch.FloatTensor)
-        gender=gender.to(self.device)
-        out2=torch.cat((out2,gender),1)
-#         print(gender.shape)
+        if not self.fairness:
+            gender=demo[:,0].to(self.device)
+            gender=self.genderEmbed(gender)
+            gender=gender.type(torch.FloatTensor)
+            gender=gender.to(self.device)
+            out2=torch.cat((out2,gender),1)
+    #         print(gender.shape)
+            
+            eth=demo[:,1].to(self.device)
+            eth=self.ethEmbed(eth)
+            eth=eth.type(torch.FloatTensor)
+            eth=eth.to(self.device)
+            out2=torch.cat((out2,eth),1)
+    #         print(eth.shape)
+            
+            ins=demo[:,2].to(self.device)
+            ins=self.insEmbed(ins)
+            ins=ins.type(torch.FloatTensor)
+            ins=ins.to(self.device)
+            out2=torch.cat((out2,ins),1)
+    #         print(ins.shape)
+            
+            age=demo[:,3].to(self.device)
+            age=self.ageEmbed(age)
+            age=age.type(torch.FloatTensor)
+            age=age.to(self.device)
+            out2=torch.cat((out2,age),1)
+    #         print(age.shape)
         
-        eth=demo[:,1].to(self.device)
-        eth=self.ethEmbed(eth)
-        eth=eth.type(torch.FloatTensor)
-        eth=eth.to(self.device)
-        out2=torch.cat((out2,eth),1)
-#         print(eth.shape)
+    #         print("out",out1.shape)
         
-        ins=demo[:,2].to(self.device)
-        ins=self.insEmbed(ins)
-        ins=ins.type(torch.FloatTensor)
-        ins=ins.to(self.device)
-        out2=torch.cat((out2,ins),1)
-#         print(ins.shape)
-        
-        age=demo[:,3].to(self.device)
-        age=self.ageEmbed(age)
-        age=age.type(torch.FloatTensor)
-        age=age.to(self.device)
-        out2=torch.cat((out2,age),1)
-#         print(age.shape)
-        
-#         print("out",out1.shape)
-        
-        out2=out2.type(torch.FloatTensor)
-        out2=out2.to(self.device)
-        out2=self.statfc(out2)
-        out2=self.statfc2(out2)
-#         print("fcout",out1.shape)
+            out2=out2.type(torch.FloatTensor)
+            out2=out2.to(self.device)
+            out2=self.statfc(out2)
+            out2=self.statfc2(out2)
+    #         print("fcout",out1.shape)
         
         out1=out1.permute(0,2,1)
         code_output = self.conv1(out1)
@@ -1230,10 +1288,16 @@ class CNNBaseH(nn.Module):
         code_pool=code_pool.view(code_pool.shape[0],-1)
 #         print("rnnout",code_h_n.shape)
         
-        out1=torch.cat((code_pool,out2),1)
-        out1 = self.fc1(out1)
-        out1 = self.fc2(out1)
-        #print("out1",out1.shape)
+        if not self.fairness:
+            out1=torch.cat((code_pool,out2),1)
+            out1 = self.fc1(out1)
+            out1 = self.fc2(out1)
+            #print("out1",out1.shape)
+        else:
+            #print("out1",out1.shape)
+            #print("code_pool", code_pool.shape)
+            out1 = self.ffc1(code_pool)
+            out1 = self.ffc2(out1)
         
         sig = nn.Sigmoid()
         sigout1=sig(out1)
@@ -1242,14 +1306,14 @@ class CNNBaseH(nn.Module):
         #print(out1[0])
         #print("hi")
         
-        print("sigout1 shape: ", sigout1.shape)
-        print("out shape: ", out1.shape)
+        #print("sigout1 shape: ", sigout1.shape)
+        #print("out shape: ", out1.shape)
         return sigout1,out1
 
 class GNNBase(nn.Module):
     def __init__(self, device, cond_vocab_size, proc_vocab_size, med_vocab_size, out_vocab_size,
                  chart_vocab_size, lab_vocab_size, eth_vocab_size, gender_vocab_size, age_vocab_size,
-                 ins_vocab_size, modalities, embed_size, gnn_size, batch_size):
+                 ins_vocab_size, modalities, embed_size, latent_size, batch_size, fairness):
         super(GNNBase, self).__init__()
 
         self.embed_size=embed_size
@@ -1265,46 +1329,105 @@ class GNNBase(nn.Module):
         self.age_vocab_size=age_vocab_size
         self.ins_vocab_size=ins_vocab_size
         
-        self.latent_size = embed_size  # Matching latent size to LSTM model for compatibility
-        self.gnn_size = gnn_size
+        self.latent_size = latent_size  # Matching latent size to LSTM model for compatibility
+        self.static_latent_size = 64
+        #self.gnn_size = gnn_size
+        self.padding_idx = 0
+        self.embed_count = 0
         self.batch_size = batch_size
         self.device = device
         self.modalities = modalities
+        self.fairness = fairness
+        self.build()
 
+    def build(self):
+
+        if self.med_vocab_size:
+            self.med=ValEmbed(self.device,self.med_vocab_size,self.embed_size,self.latent_size)     
+            self.embed_count = self.embed_count + 1           
+        if self.proc_vocab_size:
+            self.proc=CodeEmbed(self.device,self.proc_vocab_size,self.embed_size,self.latent_size)
+            self.embed_count = self.embed_count + 1 
+        if self.out_vocab_size:
+            self.out=CodeEmbed(self.device,self.out_vocab_size,self.embed_size,self.latent_size)
+            self.embed_count = self.embed_count + 1 
+        if self.chart_vocab_size:
+            self.chart=ValEmbed(self.device,self.chart_vocab_size,self.embed_size,self.latent_size)
+            self.embed_count = self.embed_count + 1 
+
+        if self.lab_vocab_size > 0:
+            self.lab=ValEmbed(self.device,self.lab_vocab_size,self.embed_size,self.latent_size)
+            self.embed_count = self.embed_count + 1 
+        else:
+            self.lab = None  # Handle missing lab data appropriately
+            
+        if self.cond_vocab_size:
+            self.cond=StatEmbed(self.device,self.cond_vocab_size,self.embed_size,self.latent_size)
+            self.embed_count = self.embed_count + 1 
+        
+        self.ethEmbed=nn.Embedding(self.eth_vocab_size,self.latent_size,self.padding_idx) 
+        self.genderEmbed=nn.Embedding(self.gender_vocab_size,self.latent_size,self.padding_idx) 
+        self.ageEmbed=nn.Embedding(self.age_vocab_size,self.latent_size,self.padding_idx) 
+        self.insEmbed=nn.Embedding(self.ins_vocab_size,self.latent_size,self.padding_idx) 
         # Embedding layers
-        self.build_embeddings(cond_vocab_size, proc_vocab_size, med_vocab_size, out_vocab_size,
-                              chart_vocab_size, lab_vocab_size, eth_vocab_size, gender_vocab_size,
-                              age_vocab_size, ins_vocab_size)
+        #self.build_embeddings(cond_vocab_size, proc_vocab_size, med_vocab_size, out_vocab_size,
+                            #chart_vocab_size, lab_vocab_size, eth_vocab_size, gender_vocab_size,
+                            #age_vocab_size, ins_vocab_size)
 
+        if not self.fairness:
+            self.statfc=nn.Linear(int(self.latent_size*4), self.latent_size, True)
+            self.statfc2=nn.Linear(self.latent_size, self.static_latent_size, True)
+            self.ffc1=nn.Linear(int(self.latent_size+self.static_latent_size), 64)
+            self.ffc2 = nn.Linear(64, 1)
+        
+        # GCN layers for spatial information
+        self.gcn1 = GraphConvLayer(in_channels=-1, out_channels=self.latent_size)
+        #self.gcn2 = GraphConvLayer(in_channels=self.latent_size, out_channels=self.latent_size)
+
+        # Recurrent layer for temporal modeling
+        self.rnn = nn.LSTM(input_size=self.latent_size, hidden_size=self.latent_size, batch_first=True) #TODO: Check latent size
+        
+        # Attention mechanism (optional)
+        self.attn = AttentionLayer(input_size=self.latent_size, output_size=self.latent_size)
+
+        # Fully connected layers for output
+        self.fc1 = nn.Linear(self.latent_size, 128)
+        self.fc2 = nn.Linear(128, 1)  # Assuming binary classification, adjust if needed
+        
+        #self.sigmoid = nn.Sigmoid()  # For binary classification output
+        """
         # Graph convolution and attention layers
         self.gcn1 = GCNConv(self.latent_size, self.gnn_size)
         self.gcn2 = GCNConv(self.gnn_size, self.gnn_size)
+        #self.gat = GATConv(self.gnn_size, self.gnn_size, heads=4, concat=False)
         self.gat = GATConv(self.gnn_size, self.gnn_size, heads=4, concat=False)
+        self.gatedgatconv = GatedGraphConv(out_channels=4, num_layers=24)
 
         # Fully connected layers
         self.fc1 = nn.Linear(self.gnn_size, int(self.gnn_size / 2))
         self.fc2 = nn.Linear(int(self.gnn_size / 2), 1)
         self.sigmoid = nn.Sigmoid()
+        """
 
     def build_embeddings(self, cond_vocab_size, proc_vocab_size, med_vocab_size, out_vocab_size,
                      chart_vocab_size, lab_vocab_size, eth_vocab_size, gender_vocab_size,
                      age_vocab_size, ins_vocab_size):
         # Check for zero vocab sizes and handle accordingly
-        self.ethEmbed = nn.Embedding(eth_vocab_size, self.latent_size) if eth_vocab_size > 0 else None
-        self.genderEmbed = nn.Embedding(gender_vocab_size, self.latent_size) if gender_vocab_size > 0 else None
-        self.ageEmbed = nn.Embedding(age_vocab_size, self.latent_size)
-        self.insEmbed = nn.Embedding(ins_vocab_size, self.latent_size)
+        self.ethEmbed = nn.Embedding(eth_vocab_size, self.embed_size) if eth_vocab_size > 0 else None
+        self.genderEmbed = nn.Embedding(gender_vocab_size, self.embed_size) if gender_vocab_size > 0 else None
+        self.ageEmbed = nn.Embedding(age_vocab_size, self.embed_size)
+        self.insEmbed = nn.Embedding(ins_vocab_size, self.embed_size)
         
         # Create embeddings for other fields
-        self.cond = nn.Embedding(cond_vocab_size, self.latent_size)
-        self.proc = nn.Embedding(proc_vocab_size, self.latent_size)
-        self.med = nn.Embedding(med_vocab_size, self.latent_size)
-        self.out = nn.Embedding(out_vocab_size, self.latent_size)
-        self.chart = nn.Embedding(chart_vocab_size, self.latent_size)
+        self.cond = nn.Embedding(cond_vocab_size, self.embed_size)
+        self.proc = nn.Embedding(proc_vocab_size, self.embed_size)
+        self.med = nn.Embedding(med_vocab_size, self.embed_size)
+        self.out = nn.Embedding(out_vocab_size, self.embed_size)
+        self.chart = nn.Embedding(chart_vocab_size, self.embed_size)
         
         # Handle potential issue with lab field
         if lab_vocab_size > 0:
-            self.lab = nn.Embedding(lab_vocab_size, self.latent_size)
+            self.lab = nn.Embedding(lab_vocab_size, self.embed_size)
         else:
             self.lab = None  # Handle missing lab data appropriately
 
@@ -1358,14 +1481,53 @@ class GNNBase(nn.Module):
         
         # Return the edge index
         return edge_index
+    
+    def create_edge_index_v3(self, num_nodes, batch_size):
+        # Create a fully connected graph for a single sample
+        node_indices = torch.arange(num_nodes)
+        edges = torch.combinations(node_indices, r=2, with_replacement=False).t()  # [2, num_edges]
+        
+        # Add edges for each sample in the batch
+        edge_index = []
+        for b in range(batch_size):
+            offset = b * num_nodes  # Offset node indices by batch
+            edges_with_offset = edges + offset
+            edge_index.append(edges_with_offset)
+        
+        # Concatenate all edges
+        edge_index = torch.cat(edge_index, dim=1)  # Shape: [2, total_edges]
+        return edge_index
+    
+    def create_dynamic_edge_index(self, x_t, k=5):
+        # x_t: [batch_size, num_nodes, feature_dim]
+        batch_size, num_nodes = x_t.size(0), x_t.size(1)
 
+        edge_index = []
 
-    def forward(self, meds, chart, out, proc, lab, conds, demo, stat=None, edge_index=None):
+        # Compute pairwise similarities for nodes in a sample
+        node_features = x_t  # Shape: [num_nodes, feature_dim]
+        #print(node_features.shape)
+        similarities = torch.mm(node_features, node_features.t())  # Cosine or dot similarity
+        #print("Similarities", similarities.shape)
+
+        # Select top-k edges for each node
+        _, topk_indices = torch.topk(similarities, k=k, dim=-1)
+        #print("topk:", topk_indices.shape)
+
+        # Create edges from top-k indices
+        edges = []
+        for node, neighbors in enumerate(topk_indices):
+            for neighbor in neighbors:
+                edges.append([node, neighbor])
+        edges = torch.tensor(edges, dtype=torch.long).t()  # [2, num_edges]
+        #print(edges.shape)
+
+        return edges
+
+    def forward(self, meds, chart, out, proc, lab, conds, demo):
         device = self.device  # Define the device once for easier reference
 
         self.seq_len = meds.size(1)
-
-        edge_index = self.create_edge_index_v2()  # Generate edge_index based on the data
 
         # Ensure valid indices before embedding
         meds = torch.clamp(meds, 0, self.med_vocab_size - 1)
@@ -1390,6 +1552,29 @@ class GNNBase(nn.Module):
         ins_embed = self.insEmbed(demo[:, 2].long())
         age_embed = self.ageEmbed(demo[:, 3].long())
 
+        #gender_embed = gender_embed.type(torch.FloatTensor).to(self.device)
+        #eth_embed = eth_embed.type(torch.FloatTensor).to(self.device)
+        #ins_embed = ins_embed.type(torch.FloatTensor).to(self.device)
+        #age_embed = age_embed.type(torch.FloatTensor).to(self.device)
+        #cond_embed = cond_embed.type(torch.FloatTensor).to(self.device)
+        cond_embed = cond_embed.unsqueeze(1).expand(-1, self.seq_len, -1)
+
+        """
+        print("Meds embed: ", med_embed.shape)
+        print("Chart embed: ", chart_embed.shape)
+        print("Out embed: ", out_embed.shape)
+        print("Proc embed: ", proc_embed.shape)
+        print("Lab embed: ", lab_embed.shape)
+        print("Cond embed: ", cond_embed.shape)
+        print("Gender embed: ", gender_embed.shape)
+        print("eth_embed embed: ", eth_embed.shape)
+        print("ins_embed embed: ", ins_embed.shape)
+        print("age_embed embed: ", age_embed.shape)
+        print("seq_length: ", self.seq_len)
+        
+        #print("[INITIAL] Cond embed: ", cond_embed.shape)
+
+        
         # Reshaping the embeddings
         med_embed_reshaped = med_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 19]
         chart_embed_reshaped = chart_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 45]
@@ -1414,200 +1599,74 @@ class GNNBase(nn.Module):
         x = torch.cat([med_embed_reshaped, chart_embed_reshaped, out_embed_reshaped, proc_embed_reshaped,
                     lab_embed_reshaped, cond_embed_reshaped, gender_embed_reshaped, eth_embed_reshaped, 
                     ins_embed_reshaped, age_embed_reshaped], dim=-1)
-        
-        # Debug: Check shape after concatenation
-        print(f"Shape after concatenation: {x.shape}")
-
-        # Mean across the second-to-last dimension
-        x = torch.mean(x, dim=-2)
-
-        # Debug: Check shape after mean operation
-        print(f"Shape after mean operation: {x.shape}")
-
-        # Reshape x for input to the linear layer
-        x = x.view(self.batch_size * self.seq_len, -1).to(self.device)  # [3072, 243]
-
-        # Debug: Check shape after mean operation
-        #print(f"Shape after view operation: {x.shape}")
-
-        # Linear transformation to latent space
-        x = nn.Linear(x.size(-1), self.latent_size).to(device)(x)
-        exit()
-
-        # Debug: Check shape after mean operation
-        #print(f"Shape after linear operation: {x.shape}")
-        #print(f"Shape of edge index: {edge_index.shape}")
-        
-        # Apply GCN layers with entropy-based attention
-        x = self.gcn1(x, edge_index.to(self.device))
-        x = F.relu(x)
-        x = self.entropy_attention(x, edge_index.to(self.device))
-        x = self.gcn2(x, edge_index.to(self.device))
-        #print(f"Shape after gcns: {x.shape}")     
-
-        # Reshape it to [batch_size, seq_len, 64] for pooling
-        x = x.view(self.batch_size, self.seq_len, -1)  # [batch_size, seq_len, 64]
-        #print(f"Shape after view: {x.shape}")
-        # Apply mean pooling across the sequence dimension (dim=1)
-        x_pooled = x.mean(dim=1)  # Shape: [batch_size, 64] (mean across sequence length)
-        #print(f"Shape after pooled: {x.shape}")
-        # Now apply the fully connected layers
-        x_fc = F.relu(self.fc1(x_pooled))  # Shape: [batch_size, fc1_out_features]
-        out = self.fc2(x_fc)  # Shape: [batch_size, 1] (final output)
-        sigout1 = self.sigmoid(out)  # Sigmoid for final output probability
-
-        return sigout1, out
-
-
-    def old_forward(self, meds, chart, out, proc, lab, conds, demo, stat=None, edge_index=None):
-        device = self.device  # Define the device once for easier reference
-
-        self.seq_len = meds.size(1)
-        #print("Sequence length equals ", self.seq_len)
-
-        edge_index = self.create_optimized_edge_index() # self.seq_len
-
-        # Ensure valid indices before embedding
-        meds = torch.clamp(meds, 0, self.med_vocab_size - 1)
-        chart = torch.clamp(chart, 0, self.chart_vocab_size - 1)
-        out = torch.clamp(out, 0, self.out_vocab_size - 1)
-        proc = torch.clamp(proc, 0, self.proc_vocab_size - 1)
-        lab = torch.clamp(lab, 0, self.lab_vocab_size - 1) if self.lab is not None else lab
-        conds = torch.clamp(conds, 0, self.cond_vocab_size - 1)
-
-        # Embedding each input (handle empty tensors with conditional checks)
-        med_embed = self.med(meds) if meds.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        chart_embed = self.chart(chart) if chart.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        out_embed = self.out(out) if out.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        proc_embed = self.proc(proc) if proc.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        lab_embed = self.lab(lab) if self.lab is not None and lab.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        cond_embed = self.cond(conds) if conds.numel() > 0 else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
         """
-        print("Meds embed: ", med_embed.shape)
-        print("Chart embed: ", chart_embed.shape)
-        print("Out embed: ", out_embed.shape)
-        print("Proc embed: ", proc_embed.shape)
-        print("Lab embed: ", lab_embed.shape)
-        print("Cond embed: ", cond_embed.shape)
-        #print("[INITIAL] Cond embed: ", cond_embed.shape)
-        """
-
-        # Demo embeddings (ensure demo tensor is on the correct device)
-        demo = demo.to(device)
-        gender_embed = self.genderEmbed(demo[:, 0].long()) if self.genderEmbed is not None else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        eth_embed = self.ethEmbed(demo[:, 1].long()) if self.ethEmbed is not None else torch.zeros(self.batch_size, self.seq_len, self.embed_size, device=self.device)
-        ins_embed = self.insEmbed(demo[:, 2].long())
-        age_embed = self.ageEmbed(demo[:, 3].long())
-        """
-        print("Gender: ", gender_embed.shape)
-        print("eth_embed: ", eth_embed.shape)
-        print("ins_embed: ", ins_embed.shape)
-        print("age_embed: ", age_embed.shape)
-        """
-        # Reshaping to match dimensions
-        med_embed_reshaped = med_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 19]
-        chart_embed_reshaped = chart_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 45]
-        out_embed_reshaped = out_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 7]
-        proc_embed_reshaped = proc_embed.permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 15]
-        lab_embed_reshaped = lab_embed.unsqueeze(-1)  # Shape: [batch_size, 24, 52, 1]
-        cond_embed_reshaped = cond_embed.unsqueeze(1).expand(-1, 24, -1, -1).permute(0, 1, 3, 2)  # Shape: [batch_size, 24, 52, 152]
-        #print(f"[RESHAPED] Cond embed: {cond_embed_reshaped.shape}")
-
-        # First, unsqueeze the embeddings to add a dimension for time (sequence length).
-        gender_embed = gender_embed.unsqueeze(1).repeat(1, 24, 1)  # Shape: [batch_size, 1, 52]
-        eth_embed = eth_embed.unsqueeze(1).repeat(1, 24, 1)        # Shape: [batch_size, 1, 52]
-        ins_embed = ins_embed.unsqueeze(1).repeat(1, 24, 1)        # Shape: [batch_size, 1, 52]
-        age_embed = age_embed.unsqueeze(1).repeat(1, 24, 1)        # Shape: [batch_size, 1, 52]
-
-        # Finally, unsqueeze the last dimension to add the singleton dimension (size 1).
-        gender_embed_reshaped = gender_embed.unsqueeze(-1)  # Shape: [batch_size, 24, 52, 1]
-        eth_embed_reshaped = eth_embed.unsqueeze(-1)        # Shape: [batch_size, 24, 52, 1]
-        ins_embed_reshaped = ins_embed.unsqueeze(-1)        # Shape: [batch_size, 24, 52, 1]
-        age_embed_reshaped = age_embed.unsqueeze(-1)        # Shape: [batch_size, 24, 52, 1]
-
-        """
-        # Print the new shapes of the embeddings after reshaping
-        print(f"Meds embed: {med_embed_reshaped.shape}")
-        print(f"Chart embed: {chart_embed_reshaped .shape}")
-        print(f"Out embed: {out_embed_reshaped .shape}")
-        print(f"Proc embed: {proc_embed_reshaped .shape}")
-        print(f"Lab embed: {lab_embed_reshaped .shape}")
-        print(f"Cond embed: {cond_embed_reshaped.shape}")
-        print(f"Gender embed: {gender_embed_reshaped .shape}")
-        print(f"Eth embed: {eth_embed_reshaped .shape}")
-        print(f"Ins embed: {ins_embed_reshaped .shape}")
-        print(f"Age embed: {age_embed_reshaped .shape}")
-        """
-
         # Concatenate embeddings into one tensor
-        x = torch.cat([med_embed_reshaped, chart_embed_reshaped, out_embed_reshaped, proc_embed_reshaped,
-               lab_embed_reshaped, cond_embed_reshaped, gender_embed_reshaped, eth_embed_reshaped, 
-               ins_embed_reshaped, age_embed_reshaped], dim=-1)
+        #x = torch.cat([med_embed, chart_embed, out_embed, proc_embed, lab_embed, cond_embed, gender_embed, eth_embed, ins_embed, age_embed], dim=-1)
+        x = torch.cat([med_embed, chart_embed, out_embed, proc_embed, lab_embed, cond_embed], dim=-1)
+        x = x.type(torch.FloatTensor)
+        x = x.to(self.device)
 
-        #print("Cat: ", x.shape)
-        #print("Passed torch.cat embeddings..")
-        x = torch.mean(x, dim=-2)
-        print("Mean shape: ", x.shape)
-        # Ensure x matches the number of nodes defined by edge_index
-        #x = x.view(self.batch_size * self.seq_len, -1).to(self.device) # TODO: REMOVE
-        # Linear transformation to latent space
-        x = nn.Linear(x.size(-1), self.latent_size).to(device)(x)
-        print("[INFO] edges SHAPE: ", edge_index.shape)
-        print("linear: ", x.shape)
-        exit()
-        # Apply GNN layers with entropy-based attention
-        x = self.gcn1(x, edge_index)
-        x = F.relu(x)
-        x = self.entropy_attention(x, edge_index)
-        x = self.gcn2(x, edge_index)
+        # Static Discriminative Features 
+        if not self.fairness: 
+            x2 = torch.cat([gender_embed, eth_embed, ins_embed, age_embed], 1)
+            x2 = x2.type(torch.FloatTensor)
+            x2 = x2.to(self.device)
+            #print("x2 shape: ", x2.shape)
+            out2=self.statfc(x2)
+            out2=self.statfc2(out2)
 
-        #print("gcn2: ", x.shape)
-        """
-        # Reshape the tensor to be [batch_size * seq_len, feature_size]
-        batch_size, seq_len, num_nodes, feature_size = x.shape  # (batch_size, 24, 52, 256)
-        x_reshaped = x.view(batch_size * seq_len, num_nodes * feature_size)
-        print("--------------------------")
-        print("x_reshaped: ", x_reshaped.shape)
-        print("edge_index: ", edge_index.shape)
-        print("--------------------------")
+        # Debug: Check shape after concatenation
+        #print(f"Shape after concatenation: {x.shape}")
 
-       # Step 1: Calculate the number of edges in the graph and expand edge_index
-        num_edges = edge_index.shape[1]  # Number of edges in the original edge index
-
-        # Calculate the total number of nodes across all batches and time steps
-        num_nodes = batch_size * seq_len  # Total nodes = batch_size * seq_len
-
-        # Repeat edge_index for the number of time steps and batches
-        expanded_edge_index = edge_index.repeat(1, batch_size * seq_len)  # Shape: [2, num_edges * batch_size * seq_len]
-
-        # Step 2: Ensure that each edge connects valid nodes in x_reshaped
-        # Create a batch_indices tensor to adjust the node indices across batches and time steps
-        batch_indices = torch.arange(batch_size * seq_len).repeat(num_edges, 1).view(2, -1).repeat_interleave(2, dim=1)  # Shape: [2, num_edges * batch_size * seq_len]
-        print("batch_indices: ", batch_indices.shape)
-        # Add batch indices to the expanded edge_index
-        expanded_edge_index = expanded_edge_index + batch_indices.to(device)
-
-        # Print expanded_edge_index shape to check
-        print("expanded_edge_index shape: ", expanded_edge_index.shape)  # Expected: [2, num_edges * batch_size * seq_len]
+        # Step 1.1: Construct Graph 
+        #edge_index = self.create_dynamic_edge_index()  # Generate edge_index based on the data
         
+        # Step 2: Apply GCN layers for each time-step
+        # We process spatial dependencies at each timestep (i.e., GCN for each patient per time step)
+        gcn_out = []
+        for t in range(self.seq_len):
+            x_t = x[:, t, :]  # Features for time-step t, [batch_size, num_nodes, num_features]
+            #print("x_t shape: ", x_t.shape)
 
+            # Step 2.1: Create dynamic edge index for the current timestep
+            edge_index = self.create_dynamic_edge_index(x_t).to(self.device)  # Dynamic graph for this timestep
+            #print("edge_index shape: ", edge_index.shape)
 
-        # Step 4: Pass the reshaped tensor to GAT
-        x = self.gat(x_reshaped, expanded_edge_index)
-        print("gat: ", x.shape)
-        """
-        # If needed, flatten batch and sequence dimensions for a fully connected layer
-        x_flat = x.view(-1, 256)  # Shape: [4800, 256] (flattened but sequence preserved per batch item)
-        # Apply mean pooling along the sequence dimension (dim=1) to aggregate temporal information
-        x_pooled = x.mean(dim=1)  # Shape: [200, 256]
-        #print("Pooled x:", x_pooled.shape)  # Should be [200, 256]
-        # Final prediction layers
-        x_fc = F.relu(self.fc1(x_pooled))  # Shape: [200, hidden_dim]
-        out = self.fc2(x_fc)  # Shape: [200, 1] for final output
-        #print("out shape:", out.shape)
+            # Step 2.2: Access GCNs
+            x_t = self.gcn1(x_t, edge_index)
+            x_t = F.relu(x_t)
+            #x_t = self.gcn2(x_t, edge_index) #TODO: UN-COMMENT FOR 2 LAYERED GNN
+            gcn_out.append(x_t)
+        
+        # Step 3: Aggregate spatial features across time steps (using RNN for temporal modeling)
+        gcn_out = torch.stack(gcn_out, dim=1)  # Shape: [batch_size, seq_len, num_nodes, latent_size]
+        #print("gcn_out", gcn_out.shape)
+        
+        # Reshape for RNN (flatten nodes)
+        gcn_out = gcn_out.view(self.batch_size, self.seq_len, -1)  # [batch_size, seq_len, num_nodes * latent_size]
+        #print("gcn_out3", gcn_out.shape)
+        
+        # Apply LSTM to capture temporal dependencies
+        rnn_out, _ = self.rnn(gcn_out)  # Shape: [batch_size, seq_len, latent_size]
+        
+        # Step 4: Optionally, apply attention mechanism to focus on specific timesteps
+        attn_out = self.attn(rnn_out)  # Optional temporal attention
 
-        # Apply sigmoid for probability output
-        sigout1 = self.sigmoid(out)  # Shape: [200, 1]
-        #print("sigout1 shape:", sigout1.shape)
+        # Step 5: Pool over the sequence dimension (e.g., mean pooling)
+        pooled_out = torch.mean(attn_out, dim=1)  # Shape: [batch_size, latent_size]
+        
+        # Step 6: Fully connected layers and output
+        if not self.fairness: 
+            #print("pooled_out: ", pooled_out.shape)
+            #print("out2: ", out2.shape)
+            pooled_out=torch.cat((pooled_out,out2),1)
+            x_fc = F.relu(self.ffc1(pooled_out)) 
+            out = self.ffc2(x_fc) 
+        else:
+            x_fc = F.relu(self.fc1(pooled_out))  # Shape: [batch_size, 64]
+            out = self.fc2(x_fc)  # Shape: [batch_size, 1]
 
-        return sigout1,out
+        sig = nn.Sigmoid()
+        sigout=sig(out)
+
+        return sigout, out

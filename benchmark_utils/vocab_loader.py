@@ -17,8 +17,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)) + './../..')
 
 
 
-def create_vocab(file):
-    with open ('./data/dict/'+file, 'rb') as fp:
+def create_vocab(file, dataset):
+    with open (dataset+file, 'rb') as fp:
         condVocab = pickle.load(fp)
     condVocabDict={}
     condVocabDict[0]=0
@@ -35,16 +35,16 @@ def gender_vocab():
 
     return genderVocabDict
 
-def create_batches(batch_size,chart_flag):
-    with open ('./data/dict/'+'hadmDic', 'rb') as fp:
+def create_batches(batch_size,chart_flag, dataset):
+    with open (dataset+'hadmDic', 'rb') as fp:
         hids = pickle.load(fp)
     
     batchDict={}
-    with open ('./data/dict/'+'dataDic', 'rb') as fp:
+    with open (dataset+'dataDic', 'rb') as fp:
         dataDic = pickle.load(fp)
     if chart_flag:
         batchChartDict={}
-        with open ('./data/dict/'+'dataChartDic', 'rb') as fp:
+        with open (dataset+'dataChartDic', 'rb') as fp:
             dataChartDic = pickle.load(fp)
     
     batch_idx=0
@@ -63,7 +63,7 @@ def create_batches(batch_size,chart_flag):
         return batchDict
 
 
-def init(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag):
+def init(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag, dataset):
         condVocabDict={}
         procVocabDict={}
         medVocabDict={}
@@ -75,51 +75,51 @@ def init(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag):
         genderVocabDict={}
         insVocabDict={}
         
-        ethVocabDict=create_vocab('ethVocab')
-        with open('./data/dict/'+'ethVocabDict', 'wb') as fp:
+        ethVocabDict=create_vocab('ethVocab', dataset)
+        with open(dataset+'ethVocabDict', 'wb') as fp:
             pickle.dump(ethVocabDict, fp)
             
-        ageVocabDict=create_vocab('ageVocab')
-        with open('./data/dict/'+'ageVocabDict', 'wb') as fp:
+        ageVocabDict=create_vocab('ageVocab', dataset)
+        with open(dataset+'ageVocabDict', 'wb') as fp:
             pickle.dump(ageVocabDict, fp)
         
         genderVocabDict=gender_vocab()
-        with open('./data/dict/'+'genderVocabDict', 'wb') as fp:
+        with open(dataset+'genderVocabDict', 'wb') as fp:
             pickle.dump(genderVocabDict, fp)
             
-        insVocabDict=create_vocab('insVocab')
-        with open('./data/dict/'+'insVocabDict', 'wb') as fp:
+        insVocabDict=create_vocab('insVocab', dataset)
+        with open(dataset+'insVocabDict', 'wb') as fp:
             pickle.dump(insVocabDict, fp)
         
         if diag_flag:
             file='condVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 condVocabDict = pickle.load(fp)
         if proc_flag:
             file='procVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 procVocabDict = pickle.load(fp)
         if med_flag:
             file='medVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 medVocabDict = pickle.load(fp)
         if out_flag:
             file='outVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 outVocabDict = pickle.load(fp)
         if chart_flag:
             file='chartVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 chartVocabDict = pickle.load(fp)
         if lab_flag:
             file='labsVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 labVocabDict = pickle.load(fp)
         
         return len(condVocabDict),len(procVocabDict),len(medVocabDict),len(outVocabDict),len(chartVocabDict),len(labVocabDict),ethVocabDict,genderVocabDict,ageVocabDict,insVocabDict
 
     
-def init_read(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag):
+def init_read(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag,dataset):
         condVocabDict={}
         procVocabDict={}
         medVocabDict={}
@@ -131,41 +131,41 @@ def init_read(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag):
         genderVocabDict={}
         insVocabDict={}
 
-        with open('./data/dict/'+'ethVocabDict', 'rb') as fp:
+        with open(dataset+'ethVocabDict', 'rb') as fp:
             ethVocabDict= pickle.load(fp)
 
-        with open('./data/dict/'+'ageVocabDict', 'rb') as fp:
+        with open(dataset+'ageVocabDict', 'rb') as fp:
             ageVocabDict= pickle.load(fp)
 
-        with open('./data/dict/'+'genderVocabDict', 'rb') as fp:
+        with open(dataset+'genderVocabDict', 'rb') as fp:
             genderVocabDict= pickle.load(fp)
             
-        with open('./data/dict/'+'insVocabDict', 'rb') as fp:
+        with open(dataset+'insVocabDict', 'rb') as fp:
             insVocabDict= pickle.load(fp)
         
         if diag_flag:
             file='condVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 condVocabDict = pickle.load(fp)
         if proc_flag:
             file='procVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 procVocabDict = pickle.load(fp)
         if med_flag:
             file='medVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 medVocabDict = pickle.load(fp)
         if out_flag:
             file='outVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 outVocabDict = pickle.load(fp)
         if chart_flag:
             file='chartVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 chartVocabDict = pickle.load(fp)
         if lab_flag:
             file='labsVocab'
-            with open ('./data/dict/'+file, 'rb') as fp:
+            with open (dataset+file, 'rb') as fp:
                 labVocabDict = pickle.load(fp)
         
 
@@ -173,21 +173,21 @@ def init_read(diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag):
 
     
     
-def get_meta():
-    with open ('./data/dict/'+'metaDic', 'rb') as fp:
+def get_meta(dataset):
+    with open (dataset+'metaDic', 'rb') as fp:
         meta = pickle.load(fp)
     if "Lab" in meta.keys():
         return meta['Med'],meta['Cond'],meta['Proc'],0,0,meta['Lab']
     else:
         return meta['Med'],meta['Cond'],meta['Proc'],meta['Out'],meta['Chart'],0
 
-def get_batches():
-    with open ('./data/dict/'+'batchDict', 'rb') as fp:
+def get_batches(dataset):
+    with open (dataset+'batchDict', 'rb') as fp:
         batchDict = pickle.load(fp)
     return batchDict
 
 
-def get_batch_data(key,data,diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag): 
+def get_batch_data(key,data,diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab_flag, dataset): 
     conds=[]  
     procs=[]
     meds=[]  
@@ -204,36 +204,36 @@ def get_batch_data(key,data,diag_flag,proc_flag,out_flag,chart_flag,med_flag,lab
     gender=[]
     
     
-    with open ('./data/dict/'+'metaDic', 'rb') as fp:
+    with open (dataset+'metaDic', 'rb') as fp:
         meta = pickle.load(fp)
     if diag_flag:
-        with open ('./data/dict/'+'condVocabDict', 'rb') as fp:
+        with open (dataset+'condVocabDict', 'rb') as fp:
             condVocabDict = pickle.load(fp)
     if proc_flag:
-        with open ('./data/dict/'+'procVocabDict', 'rb') as fp:
+        with open (dataset+'procVocabDict', 'rb') as fp:
             procVocabDict = pickle.load(fp)
     if med_flag:
-        with open ('./data/dict/'+'medVocabDict', 'rb') as fp:
+        with open (dataset+'medVocabDict', 'rb') as fp:
             medVocabDict = pickle.load(fp)
     if out_flag:
-        with open ('./data/dict/'+'outVocabDict', 'rb') as fp:
+        with open (dataset+'outVocabDict', 'rb') as fp:
             outVocabDict = pickle.load(fp)
     if lab_flag:
-        with open ('./data/dict/'+'labVocabDict', 'rb') as fp:
+        with open (dataset+'labVocabDict', 'rb') as fp:
             labVocabDict = pickle.load(fp)
    
-    with open ('./data/dict/'+'ethVocabDict', 'rb') as fp:
+    with open (dataset+'ethVocabDict', 'rb') as fp:
         ethVocabDict = pickle.load(fp)
-    with open ('./data/dict/'+'genderVocabDict', 'rb') as fp:
+    with open (dataset+'genderVocabDict', 'rb') as fp:
         genderVocabDict = pickle.load(fp)    
-    with open ('./data/dict/'+'ageVocabDict', 'rb') as fp:
+    with open (dataset+'ageVocabDict', 'rb') as fp:
         ageVocabDict = pickle.load(fp)
         
         
     if chart_flag:
-        with open ('./data/dict/'+'chartVocabDict', 'rb') as fp:
+        with open (dataset+'chartVocabDict', 'rb') as fp:
             chartVocabDict = pickle.load(fp)
-        with open ('./data/dict/'+'batchChartDict', 'rb') as fp:
+        with open (dataset+'batchChartDict', 'rb') as fp:
             batchChartDict = pickle.load(fp)
             batchChartDict=batchChartDict[key]
             
