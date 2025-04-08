@@ -26,4 +26,4 @@ Additionally in the context of this paper (*Fairness-Aware Graph Neural Networks
   
 1. for ml_pipeline.py which is used to generate the outputs of 'Logistic Regression', 'Gradient Boosting', 'Random Forest', and 'XGBoost' please specify the folder path within model/ml_models.py. 
   
-2. for benchmark.py which were used to generate all DL models outputs specify the dataset folder path using the cli flag --dataset (Examples on this subject are presented within the **benchmark_scripts folder).
+2. for benchmark.py which is used to generate all DL models outputs, specify the dataset folder path using the cli flag --dataset (Examples on this subject are presented within the **benchmark_scripts folder).
