@@ -5,7 +5,7 @@
 ##### Citing our study: 
 
 ```
-To be published in IEEE Access.
+This paper has been accepted for publication in IEEE Access.
 ```
 
 For this study, we extended the widely adopted pre-processing pipeline proposed by Gupta et al. [ML4H](https://proceedings.mlr.press/v193/gupta22a/gupta22a.pdf), as illustrated in the figure below. Specifically, we build upon steps (1) and (2), which handle dataset construction and initial pre-processing, by incorporating two additional stages:
