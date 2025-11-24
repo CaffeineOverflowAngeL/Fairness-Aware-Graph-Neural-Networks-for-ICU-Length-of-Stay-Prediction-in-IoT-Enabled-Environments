@@ -5,7 +5,13 @@
 ##### Citing our study: 
 
 ```
-Maroudis, Angelos Christos, et al. "Fairness-Aware Graph Neural Networks for ICU Length of Stay Prediction in IoT-Enabled Environments." IEEE Access (2025).
+@article{maroudis2025fairness,
+  title={Fairness-Aware Graph Neural Networks for ICU Length of Stay Prediction in IoT-Enabled Environments},
+  author={Maroudis, Angelos Christos and Karathanasopoulou, Konstantina and Stylianides, Charithea and Dimitrakopoulos, George and Panayides, Andreas S},
+  journal={IEEE Access},
+  year={2025},
+  publisher={IEEE}
+}
 ```
 
 For this study, we extended the widely adopted pre-processing pipeline proposed by Gupta et al. [ML4H](https://proceedings.mlr.press/v193/gupta22a/gupta22a.pdf), as illustrated in the figure below. Specifically, we build upon steps (1) and (2), which handle dataset construction and initial pre-processing, by incorporating two additional stages:
@@ -15,7 +21,7 @@ For this study, we extended the widely adopted pre-processing pipeline proposed 
 
 ##### Contacting us: 
 
-Please do not hesitate to contact amaroudis@hua.gr with any questions or issues related to the code or the paper.
+Please do not hesitate to reach out to amaroudis@hua.gr with any questions or issues related to the code or the paper.
 
 ##### Citing MIMIC-IV Data Pipeline:
 MIMIC-IV Data Pipeline code is available on [ML4H](https://github.com/healthylaife/MIMIC-IV-Data-Pipeline).
